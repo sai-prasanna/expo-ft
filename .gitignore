@@ -6,8 +6,8 @@ checkpoints/
 logs/
 runs/
 paper/
-openpi/
-droid/
+/openpi/
+/droid/
 client/droid/
 assets/
 .venv/
