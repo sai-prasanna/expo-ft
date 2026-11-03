@@ -58,10 +58,14 @@ def process_droid_dataset(
             
             ep_obs = load_recursive(f["saved_observation"])
             action_key = task_config.action_space
-            gripper_key = f"gripper_{task_config.gripper_action_space}"
             a1 = np.asarray(f["action"][action_key])
-            a2 = np.asarray(f["action"][gripper_key])
-            ep_actions = np.concatenate([a1, a2[:, None] if len(a2.shape) == 1 else a2], axis=-1)
+            if task_config.get("gripper_action_space") is None:
+                # Gripper already inside action/<action_space> (e.g. DK1 "action14": [L6, Lg, R6, Rg]).
+                ep_actions = a1
+            else:
+                gripper_key = f"gripper_{task_config.gripper_action_space}"
+                a2 = np.asarray(f["action"][gripper_key])
+                ep_actions = np.concatenate([a1, a2[:, None] if len(a2.shape) == 1 else a2], axis=-1)
             
             T = len(ep_actions)
             ep_dones = np.pad(np.array([1.0], dtype=np.float32), (T-1, 0), constant_values=0)

@@ -1,0 +1,35 @@
+[project]
+name = "expo-ft-client-dk1"
+version = "0.1.0"
+description = "EXPO-FT client (actor) for the bimanual TRLC-DK1: rollouts, data collection, leader-arm interventions"
+requires-python = ">=3.12"
+dependencies = [
+    # TRLC-DK1 LeRobot plugin (vendored subtree); pulls lerobot[dynamixel,viz]>=0.5.1 and mujoco.
+    "lerobot_robot_trlc_dk1",
+    # Anchored relative-IK interventions (same versions as amazon-far/abc).
+    "mink==1.1.0",
+    "daqp",
+    "openpi-client",
+    "websockets~=13.1",  # pin to match server side
+    "tyro",
+    "absl-py>=2.0.0",
+    "ml-collections",
+    "h5py",
+    "imageio[ffmpeg]",
+    "numpy",
+    "pynput",  # optional keyboard clutch backend (X11 only)
+]
+
+# Hosts the DK1 client deps only; the shared `client/` Python package is run from the
+# repo root as `python -m client.<module>` with this directory's .venv activated.
+# Never import `droid` from DK1 code paths.
+[tool.uv]
+package = false
+# openpi-client pins numpy<2, but lerobot>=0.5 (trlc-dk1) needs numpy>=2. The client only
+# uses openpi_client.msgpack_numpy / image_tools, which work on numpy 2 (the wire format is
+# dtype string + raw bytes, so it interoperates with the numpy-1 server).
+override-dependencies = ["numpy>=2.0.1"]
+
+[tool.uv.sources]
+lerobot_robot_trlc_dk1 = { path = "../third_party/trlc-dk1", editable = true }
+openpi-client = { path = "../expo_ft/agents/vla/openpi/packages/openpi-client", editable = true }

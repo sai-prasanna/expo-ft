@@ -66,9 +66,9 @@ def main(_):
     )
     logger = logging.getLogger(__name__)
 
-    if config_task.env_type != "droid":
+    if config_task.env_type not in ("droid", "dk1"):
         raise ValueError(
-            "This script is for DROID evaluation only; config_task.env_type must be 'droid'."
+            "This script is for DROID/DK1 evaluation only; config_task.env_type must be 'droid' or 'dk1'."
         )
 
     if not FLAGS.dataset_path:

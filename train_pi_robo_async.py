@@ -140,7 +140,7 @@ def main(_):
     init_wandb(checkpoint_dir_path, resuming, FLAGS.project_name, FLAGS.run_name)
     wandb.config.update(FLAGS.flag_values_dict(), allow_val_change=resuming)
 
-    if FLAGS.config_task.env_type == "droid":
+    if FLAGS.config_task.env_type in ("droid", "dk1"):
         dataset = process_droid_dataset(
             FLAGS.dataset_path,
             FLAGS.config_task,
@@ -447,7 +447,7 @@ def main(_):
                 time.sleep(sleep_left)
 
         has_action = bool(action_plan)
-        action = action_plan.popleft() if has_action else np.zeros_like(example_action.squeeze())
+        action = action_plan.popleft() if has_action else np.full_like(example_action.squeeze(), -1.0)  # all -1 = client holds (zeros would be a joint target)
 
         with timer.context("act"):
             last_control_start = time.time()

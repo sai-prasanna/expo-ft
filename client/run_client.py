@@ -176,12 +176,24 @@ async def _handle_environment_request(websocket):
                                 "Action contains NaN/Inf; replacing with zeros. "
                                 "Check policy inputs (observations, encoder), training stability, or checkpoint."
                             )
-                            sent_action = np.where(np.isfinite(sent_action), sent_action, 0.0)
+                            if hasattr(env, "get_human_action"):
+                                # Absolute joint actions (DK1): zeros are a joint target; hold instead.
+                                sent_action = np.full_like(sent_action, -1.0)
+                            else:
+                                sent_action = np.where(np.isfinite(sent_action), sent_action, 0.0)
                         real_action = sent_action.copy()
                         action_type = "policy"
                         is_human = False
                         t_human0 = time.perf_counter()
-                        if _task_config is not None and _task_config.env_type == "droid":
+                        if hasattr(env, "get_human_action"):
+                            # DK1: anchored relative-IK from the leader arms (clutch-gated, own thread).
+                            human_action, is_human = env.get_human_action()
+                            if is_human and human_action is not None:
+                                real_action = np.asarray(human_action, dtype=np.float64)
+                                action_type = "human"
+                            else:
+                                is_human = False
+                        elif _task_config is not None and _task_config.env_type == "droid":
                             sm_action, is_human = _get_human_override_action(_task_config)
                             if is_human and sm_action is not None:
                                 real_action[:6] = sm_action[:6]

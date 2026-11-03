@@ -18,6 +18,7 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.dk1_policy as dk1_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -469,6 +470,43 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             outputs=[droid_policy.DroidOutputs(action_dim=self.output_action_dim)],
         )
         model_transforms = ModelTransformFactory(
+            image_resize=self.model_image_resize,
+        )(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDK1DataConfig(DataConfigFactory):
+    """Bimanual TRLC-DK1 in LeRobot format (see scripts/convert_dk1_data_to_lerobot.py).
+
+    Dataset feature names equal the env observation keys (client/envs/dk1_env.py), so the
+    repack maps every key to itself. Actions are 14-D *absolute* joint positions; there is
+    deliberately no DeltaActions: Pi05.process_transformed_outputs runs the output transforms
+    with a zero state, so AbsoluteActions would be wrong online.
+    """
+
+    # Output image size from model transforms (keep equal to what the replay buffer stores).
+    model_image_resize: int = 224
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_mapping = {k: k for k in dk1_policy.DK1_IMAGE_KEYS}
+        repack_mapping.update({"state": "state", "actions": "actions", "prompt": "prompt"})
+        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_mapping)])
+        data_transforms = _transforms.Group(
+            inputs=[dk1_policy.DK1Inputs(model_type=model_config.model_type)],
+            outputs=[dk1_policy.DK1Outputs(action_dim=dk1_policy.DK1_ACTION_DIM)],
+        )
+        model_transforms = ModelTransformFactory(
+            default_prompt=self.default_prompt,
             image_resize=self.model_image_resize,
         )(model_config)
 
@@ -947,6 +985,62 @@ _CONFIGS = [
         ).get_freeze_filter(),
         ema_decay=None,
     ),
+    #
+    # Bimanual TRLC-DK1 (EXPO-FT port). 14-D absolute joint actions, three cameras.
+    # Copied from expo_pi05_droid_*_finetune_sft_cartesian_state; RL reuses the SFT config name.
+    #
+    TrainConfig(
+        name="expo_pi05_dk1_lora_finetune_sft",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotDK1DataConfig(
+            repo_id="",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=20_000,
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=0,
+            peak_lr=2.5e-5,
+            decay_steps=100_000,
+            decay_lr=2.5e-5,
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="expo_pi05_dk1_full_finetune_sft",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+        ),
+        data=LeRobotDK1DataConfig(
+            repo_id="",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=20_000,
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=0,
+            peak_lr=5e-5,
+            decay_steps=100_000,
+            decay_lr=5e-5,
+        ),
+    ),
     TrainConfig(
         name="expo_pi05_droid_full_finetune_sft_cartesian_state",
         model=pi0_config.Pi0Config(
@@ -1043,6 +1137,21 @@ _CONFIGS = [
         exp_name="debug",
         num_train_steps=10,
         wandb_enabled=False,
+    ),
+    # Tiny pi0.5 with the DK1 data pipeline: tests the DK1 plumbing end to end (SFT, server,
+    # mock client) without the pi05_base download or a large GPU. Not for real training.
+    TrainConfig(
+        name="debug_pi05_dk1",
+        model=pi0_config.Pi0Config(
+            pi05=True, action_dim=32, action_horizon=16, paligemma_variant="dummy", action_expert_variant="dummy"
+        ),
+        data=LeRobotDK1DataConfig(repo_id="", base_config=DataConfig(prompt_from_task=True)),
+        batch_size=2,
+        num_train_steps=10,
+        overwrite=True,
+        exp_name="debug_pi05_dk1",
+        wandb_enabled=False,
+        ema_decay=None,
     ),
     TrainConfig(
         name="debug_pi05",
