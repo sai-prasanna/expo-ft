@@ -100,7 +100,9 @@ The home pose is where every episode starts. RL and eval refuse to run without i
    **Enter**. The script saves `reset_joints` with the grippers open.
 3. Optional: add a `"rest_joints"` entry to the JSON file. Use 14 values in the
    `[L j1..j6, L grip, R j1..j6, R grip]` order, for a pose where the arms can safely go
-   limp. On close, the env moves there before it disables the motors.
+   limp. On close, the env moves there before it disables the motors, and doesn't ask you
+   to hold the arms. Without it, the env moves to the home pose and then asks you to hold
+   the arms.
 4. Commit the hardware file:
 
    ```bash

@@ -85,7 +85,8 @@ def get_config():
     # ramps each new target over one control period instead of stepping it.
     config.command_interp_hz = 0.0
     # Optional 14-D pose where the arms can safely go limp (e.g. resting on their stops). On
-    # close, DK1Env moves there before disabling the motors; if None it asks you to hold the arms.
+    # close, DK1Env moves there before disabling the motors. If None, it moves to reset_joints
+    # instead and asks you to hold the arms (they still fall from the home pose).
     rest = hw.get("rest_joints")
     config.rest_joints = None if rest is None else np.asarray(rest, dtype=np.float64)
 

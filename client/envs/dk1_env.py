@@ -599,17 +599,20 @@ class DK1Env:
             self._clutch.set_engaged(False)
 
     def park(self):
-        """Before the motors are disabled: move to rest_joints (if set), else ask the operator to
-        support the arms. DK1Follower.disconnect() disables the motors, so the arms go limp."""
+        """Before the motors are disabled (DK1Follower.disconnect() makes the arms go limp): move to
+        rest_joints, or to the home pose if none is set. Without an explicit rest_joints (a pose
+        that is safe to go limp in), also ask the operator to support the arms."""
         if self.mock:
             return
         try:
-            if self.rest_joints is not None:
-                print("[DK1Env] moving to rest_joints before disabling the motors...")
-                self._move_to(self.rest_joints)
-            else:
+            target = self.rest_joints if self.rest_joints is not None else self.reset_joints
+            if target is not None:
+                print("[DK1Env] moving to " + ("rest_joints" if self.rest_joints is not None else "the home pose")
+                      + " before disabling the motors...")
+                self._move_to(target)
+            if self.rest_joints is None:
                 self._wait_for_enter("[DK1Env] !!! Motors are about to be DISABLED and the arms will fall. "
-                                     "Support both arms (or set rest_joints), then press Enter.")
+                                     "Support both arms, then press Enter.")
         except BaseException as e:  # Ctrl-C during park: still disconnect cleanly
             print(f"[DK1Env] park interrupted ({e!r})")
 
