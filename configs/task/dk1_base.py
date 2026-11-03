@@ -84,10 +84,9 @@ def get_config():
     # Off by default. If motion at 15 Hz looks jerky on the robot, set e.g. 100.0: a thread then
     # ramps each new target over one control period instead of stepping it.
     config.command_interp_hz = 0.0
-    # Optional 14-D pose where the arms can safely go limp (e.g. resting on their stops). On
-    # close, DK1Env moves there before disabling the motors. If None, it moves to reset_joints
-    # instead and asks you to hold the arms (they still fall from the home pose).
-    rest = hw.get("rest_joints")
+    # Pose the arms move to before the motors are disabled on close (they go limp there).
+    # Defaults to the home pose; set "rest_joints" in dk1_hardware.json to use another pose.
+    rest = hw.get("rest_joints", reset)
     config.rest_joints = None if rest is None else np.asarray(rest, dtype=np.float64)
 
     # ---- EXPO-FT plumbing -----------------------------------------------------------------

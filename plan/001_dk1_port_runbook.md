@@ -98,11 +98,10 @@ The home pose is where every episode starts. RL and eval refuse to run without i
    The followers ease onto the leaders. This also checks that plain teleoperation works.
 2. Move the leaders to a home pose that has a clear view of the workspace, then press
    **Enter**. The script saves `reset_joints` with the grippers open.
-3. Optional: add a `"rest_joints"` entry to the JSON file. Use 14 values in the
-   `[L j1..j6, L grip, R j1..j6, R grip]` order, for a pose where the arms can safely go
-   limp. On close, the env moves there before it disables the motors, and doesn't ask you
-   to hold the arms. Without it, the env moves to the home pose and then asks you to hold
-   the arms.
+3. On close, the env moves the arms to the home pose and then disables the motors, so
+   the arms go limp from home. Optional: to use a different pose, add a `"rest_joints"`
+   entry to the JSON file with 14 values in the `[L j1..j6, L grip, R j1..j6, R grip]`
+   order.
 4. Commit the hardware file:
 
    ```bash
