@@ -196,6 +196,7 @@ def check(hw: dict):
     print("Connecting followers...")
     arms = _RealArms(hw["left_follower_port"], hw["right_follower_port"])
     print("  follower state:", arms.get().round(3))
+    input("Motors will be DISABLED next and the arms will fall: support both arms, then press Enter.")
     arms.close()
     print("Connecting leaders...")
     leaders = _RealLeaders(hw["left_leader_port"], hw["right_leader_port"])
@@ -212,6 +213,16 @@ def record_home(hw: dict, hz: float = 50.0):
     import numpy as np
 
     from client.envs.dk1_env import _RealArms, _RealLeaders, clip_joint_delta, clip_to_limits
+    from configs.task import dk1_base  # leader->follower joint map lives in the task config
+    iv = dict(dk1_base.get_config().intervention)
+    offsets = np.asarray(iv.get("leader_joint_offsets", [0.0] * 12), float)
+    signs = np.asarray(iv.get("leader_joint_signs", [1.0] * 12), float)
+
+    def to_follower(l14):
+        out = l14.copy()
+        out[0:6] = signs[0:6] * out[0:6] + offsets[0:6]
+        out[7:13] = signs[6:12] * out[7:13] + offsets[6:12]
+        return out
 
     leaders = _RealLeaders(hw["left_leader_port"], hw["right_leader_port"])
     arms = _RealArms(hw["left_follower_port"], hw["right_follower_port"])
@@ -219,7 +230,7 @@ def record_home(hw: dict, hz: float = 50.0):
     try:
         while True:
             t0 = time.time()
-            target = clip_to_limits(leaders.get())
+            target = clip_to_limits(to_follower(leaders.get()))
             arms.send(clip_joint_delta(target, arms.get(), 0.02))
             if select.select([sys.stdin], [], [], 0)[0]:
                 sys.stdin.readline()
@@ -229,6 +240,7 @@ def record_home(hw: dict, hz: float = 50.0):
         home[6] = home[13] = 0.0
         hw["reset_joints"] = [round(float(x), 4) for x in home]
         print("reset_joints =", hw["reset_joints"])
+        input("Motors will be DISABLED next and the arms will fall: support both arms, then press Enter.")
     finally:
         leaders.close()
         arms.close()

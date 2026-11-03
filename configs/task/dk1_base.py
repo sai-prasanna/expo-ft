@@ -81,6 +81,13 @@ def get_config():
     config.max_joint_delta_per_step = 0.1
     # Optional EE box per arm in that arm's base frame (m), [[xmin,xmax],[ymin,ymax],[zmin,zmax]].
     config.ee_bounds = None
+    # Off by default. If motion at 15 Hz looks jerky on the robot, set e.g. 100.0: a thread then
+    # ramps each new target over one control period instead of stepping it.
+    config.command_interp_hz = 0.0
+    # Optional 14-D pose where the arms can safely go limp (e.g. resting on their stops). On
+    # close, DK1Env moves there before disabling the motors; if None it asks you to hold the arms.
+    rest = hw.get("rest_joints")
+    config.rest_joints = None if rest is None else np.asarray(rest, dtype=np.float64)
 
     # ---- EXPO-FT plumbing -----------------------------------------------------------------
     config.action_space = "action14"  # traj.hdf5 action/action14 holds [L6, Lg, R6, Rg]

@@ -8,8 +8,10 @@ Port of amazon-far/abc (d0832d1) `RelativeGelloController` + `relative_pose.py`:
                            target_rot = scale(q_leader * q_anchor_leader^-1, rot_scale) * q_anchor_follower
                            joints     = IK(target, seed=previous command)
 
-The rotation delta is applied in the world (arm base) frame. Grippers map the leader trigger
-(0 open .. 1 closed) directly. Switching policy <-> human is a hard switch, no blending.
+The rotation delta is applied in the world (arm base) frame. Grippers: on engage the follower
+keeps its own grip until the leader trigger reaches it (no jump that would drop a held object),
+then follows the trigger (0 open .. 1 closed) directly. Switching policy <-> human is a hard
+switch, no blending.
 
 `InterventionThread` runs leader reads + IK at ~60 Hz in the background and keeps the latest
 14-D target, so the IK stays smooth and its seed never goes stale; `run_client` only sees
@@ -112,6 +114,8 @@ class RelativeIKController:
         self.signs = np.ones(12) if leader_joint_signs is None else np.asarray(leader_joint_signs, float).reshape(12)
         self.anchors: dict[str, dict[str, np.ndarray]] = {}
         self.last = np.zeros(14)
+        self.grip_latch_tol = 0.05
+        self._grip = {}  # side -> dict(hold, start, latched)
 
     def leader_to_follower_joints(self, leader14: np.ndarray) -> np.ndarray:
         """Apply the leader->follower joint map to the 6 arm joints of each side (grippers untouched)."""
@@ -130,6 +134,21 @@ class RelativeIKController:
             t_pos, t_wxyz = self.solvers[side].fk(leader14[sl][:6])
             o_pos, o_wxyz = self.solvers[side].fk(follower14[sl][:6])
             self.anchors[side] = dict(tracked_pos=t_pos, tracked_wxyz=t_wxyz, output_pos=o_pos, output_wxyz=o_wxyz)
+            hold = float(np.clip(follower14[sl][6], 0.0, 1.0))
+            start = float(np.clip(leader14[sl][6], 0.0, 1.0))
+            self._grip[side] = dict(hold=hold, start=start, latched=abs(start - hold) <= self.grip_latch_tol)
+
+    def _gripper(self, side: str, trigger: float) -> float:
+        """Keep the follower's grip until the trigger crosses it, then track the trigger."""
+        trigger = float(np.clip(trigger, 0.0, 1.0))
+        g = self._grip[side]
+        if not g["latched"]:
+            crossed = (trigger - g["hold"]) * (g["start"] - g["hold"]) <= 0
+            if crossed or abs(trigger - g["hold"]) <= self.grip_latch_tol:
+                g["latched"] = True
+            else:
+                return g["hold"]
+        return trigger
 
     def targets(self, leader14: np.ndarray) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         leader14 = self.leader_to_follower_joints(leader14)
@@ -156,7 +175,7 @@ class RelativeIKController:
             pos, wxyz = targets[side]
             arm = result[sl]  # view
             arm[:6] = self.solvers[side].solve(pos, wxyz, arm[:6])
-            arm[6] = float(np.clip(leader14[sl][6], 0.0, 1.0))
+            arm[6] = self._gripper(side, leader14[sl][6])
         self.last = result
         return result.copy()
 
@@ -176,6 +195,7 @@ class InterventionThread:
         read_leader: Callable[[], np.ndarray],
         read_follower: Callable[[], np.ndarray],
         rate_hz: float = 60.0,
+        max_consecutive_errors: int = 6,
     ):
         self.controller = controller
         self.clutch = clutch
@@ -188,6 +208,8 @@ class InterventionThread:
         self._anchored_epoch = -1
         self._stop = threading.Event()
         self.last_error: Exception | None = None
+        self.max_consecutive_errors = int(max_consecutive_errors)
+        self._errors = 0
         self.loop_ms = 0.0
         self._thread = threading.Thread(target=self._loop, daemon=True, name="dk1-intervention")
         self._thread.start()
@@ -197,14 +219,21 @@ class InterventionThread:
             t0 = time.perf_counter()
             try:
                 self._tick()
-            except Exception as e:  # never kill the thread; report and drop to policy control
+                self._errors = 0
+            except Exception as e:  # never kill the thread; tolerate transient read errors
                 self.last_error = e
-                print(f"[intervention] error: {e!r}; releasing to policy", flush=True)
-                with self._lock:
-                    self._active = False
-                    self._target = None
-                self._anchored_epoch = -1
-                self.clutch.set_engaged(False)
+                self._errors += 1
+                if self._errors < self.max_consecutive_errors:
+                    print(f"[intervention] transient error {self._errors}: {e!r} (keeping last target)", flush=True)
+                else:
+                    print(f"\n[intervention] !!! {self._errors} consecutive errors ({e!r}); "
+                          f"RELEASING TO POLICY CONTROL !!!\n", flush=True)
+                    with self._lock:
+                        self._active = False
+                        self._target = None
+                    self._anchored_epoch = -1
+                    self._errors = 0
+                    self.clutch.set_engaged(False)
             self.loop_ms = (time.perf_counter() - t0) * 1000.0
             time.sleep(max(0.0, self.period - (time.perf_counter() - t0)))
 
@@ -221,10 +250,18 @@ class InterventionThread:
             self._anchored_epoch = epoch
         target = self.controller.step(leader)
         with self._lock:
+            # The leader read + IK take a while: drop the result if the clutch was released or
+            # re-engaged (new anchor needed) meanwhile, so get() never reports a stale human action.
+            if self.clutch.state() != (True, epoch):
+                self._active = False
+                self._target = None
+                return
             self._target = target
             self._active = True
 
     def get(self) -> tuple[np.ndarray | None, bool]:
+        if not self.clutch.engaged:
+            return None, False
         with self._lock:
             if not self._active or self._target is None:
                 return None, False

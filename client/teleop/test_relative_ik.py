@@ -99,9 +99,14 @@ def hardware(args) -> int:
                            cfg.leader_gripper_open_pos, cfg.leader_gripper_closed_pos)
     arms = _RealArms(cfg.left_follower_port, cfg.right_follower_port, control_mode=cfg.control_mode,
                      max_gripper_torque=cfg.max_gripper_torque, use_bimanual_class=cfg.use_bimanual_class)
+    ik_keys = ("iterations", "position_cost", "orientation_cost", "gain", "max_velocity",
+               "limit_margin", "limit_gain", "posture_cost", "max_joint_delta", "solver")
     ctrl = RelativeIKController(home14=cfg.reset_joints, dt=1.0 / iv.get("rate_hz", 60.0),
+                                position_scale=iv.get("position_scale", 1.0),
+                                rotation_scale=iv.get("rotation_scale", 1.0),
                                 leader_joint_offsets=iv.get("leader_joint_offsets"),
-                                leader_joint_signs=iv.get("leader_joint_signs"))
+                                leader_joint_signs=iv.get("leader_joint_signs"),
+                                **{k: iv[k] for k in ik_keys if k in iv})
     try:
         print("Comparing FK(leader) with FK(follower) (follower model). Ctrl+C to continue.")
         try:
@@ -132,6 +137,7 @@ def hardware(args) -> int:
             pass
     finally:
         leaders.close()
+        input("Follower motors will be DISABLED next and the arms will fall: support both arms, then press Enter.")
         arms.close()
     return 0
 

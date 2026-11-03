@@ -137,7 +137,17 @@ async def _handle_environment_request(websocket):
                     env_kwargs = dict(task_config)
                     env_kwargs["video_dir"] = request.get("video_dir") or ""
                     env_kwargs["env_usage"] = env_usage
-                    env = task_config.env(**env_kwargs)
+                    # DK1 (one physical robot per process): on a server restart or the server's
+                    # error-retry re-create, reuse the live env instead of opening the serial
+                    # ports a second time (closing it would disable the motors and drop the arms).
+                    reuse = next((e for e in _env_storage.values() if hasattr(e, "park")), None)
+                    if reuse is not None:
+                        logger.info(f"Reusing the existing DK1 environment for {env_id}")
+                        _env_storage.clear()
+                        env = reuse
+                        env.video_dir = env_kwargs["video_dir"]
+                    else:
+                        env = task_config.env(**env_kwargs)
                     _env_storage[env_id] = env
                     logger.info(f"Environment {env_id} created successfully")
                     
