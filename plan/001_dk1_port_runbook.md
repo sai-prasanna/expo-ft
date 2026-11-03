@@ -174,7 +174,19 @@ bash scripts/dk1_task/collect_data.sh
 ```
 
 Only successful episodes are kept, in `data/dk1_task/success/<id>/traj.hdf5`, with MP4
-previews next to them in `recordings/MP4/`.
+previews next to them in `recordings/MP4/`. Running the script again with the same folder
+adds episodes; it never overwrites them.
+
+To collect for several tasks, use one folder and one prompt per task:
+
+```bash
+SAVE_ROOT=data/dk1_pick PROMPT="pick up the cube" bash scripts/dk1_task/collect_data.sh
+```
+
+The prompt is stored with every episode. The LeRobot conversion uses each episode's stored
+prompt, so you can point `DATA_DIR` in `convert_data.sh` at `data/` to fine-tune one
+multi-task policy. For EXPO-FT, set `language_instruction` in the task config to that task's
+prompt and point `--dataset_path` at that task's `success/` folder.
 
 **Check:** `ls data/dk1_task/success` shows 20 numbered folders. Open one or two MP4
 previews: all three cameras should be visible, with the correct left and right.

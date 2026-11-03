@@ -38,6 +38,8 @@ from ml_collections import config_flags
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string("save_root", "data/dk1_task", "Root directory for collected trajectories.")
+flags.DEFINE_string("prompt", "", "Task prompt stored with every episode of this session "
+                    "(default: the task config's language_instruction).")
 flags.DEFINE_integer("num_episodes", 0, "Successful trajectories to collect (0 = run indefinitely).")
 config_flags.DEFINE_config_file("task_config", "configs/task/dk1_task.py", "Task config file.", lock_config=False)
 flags.DEFINE_bool("test_detector", False, "Never save; on done reset and keep looping (detector testing).")
@@ -312,6 +314,9 @@ def main(_):
     base_dir = FLAGS.save_root
     os.makedirs(base_dir, exist_ok=True)
     task_config = FLAGS.task_config
+    if FLAGS.prompt:
+        task_config.language_instruction = FLAGS.prompt
+    print(f"Prompt for this session: {task_config.language_instruction!r}")
     env_kwargs = dict(task_config)
     env_kwargs["video_dir"] = ""
     env_kwargs["env_usage"] = "collect"
