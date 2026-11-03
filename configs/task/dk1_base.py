@@ -58,7 +58,7 @@ def get_config():
     })
     config.control_mode = "impedance"  # DK1Follower: "impedance" (MIT + gravity comp) or "pos_vel"
     config.max_gripper_torque = 1.0  # Nm
-    config.use_bimanual_class = False  # True: BiDK1Follower (see DK1_PORT_NOTES.md possible bug)
+    config.use_bimanual_class = False  # True: BiDK1Follower (its feature listing references a missing `.motors`)
     config.leader_gripper_open_pos = 2280
     config.leader_gripper_closed_pos = 1670
 
