@@ -373,7 +373,7 @@ class DK1Env:
                     raise ValueError(f"{name} is not set; run `python -m client.dk1_setup_hardware` first.")
             if self.reset_joints is None and env_usage in ("train", "eval"):
                 raise ValueError("reset_joints is not set: RL/eval episodes must start from a home pose. "
-                                 "Run `python -m client.dk1_setup_hardware --record_home`.")
+                                 "Set reset_joints in the task config (dk1_base.py defaults to the folded pose).")
             self._arms = _RealArms(left_follower_port, right_follower_port, control_mode=control_mode,
                                    max_gripper_torque=max_gripper_torque, use_bimanual_class=use_bimanual_class,
                                    interp_hz=command_interp_hz, interp_s=1.0 / self.control_hz)

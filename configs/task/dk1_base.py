@@ -4,7 +4,6 @@ Hardware specifics (serial ports, cameras, home pose) are machine-specific and l
 `configs/task/dk1_hardware.json`, written by
 
     python -m client.dk1_setup_hardware            # ports + cameras (interactive)
-    python -m client.dk1_setup_hardware --record_home   # teleop to the home pose, save it
 
 If that file is missing, the PLACEHOLDER values below are used (fine for mock=True; a real
 DK1Env refuses to start with placeholder ports).
@@ -26,6 +25,8 @@ except Exception as e:  # server venv without client deps, etc.
     print(f"Not importing DK1 env ({e!r})")
 
 HARDWARE_FILE = Path(__file__).with_name("dk1_hardware.json")
+# Folded-up rest pose = calibration zero: all joints 0, grippers open. Used as the default home.
+DK1_FOLDED_POSE = [0.0] * 14
 
 
 def _load_hardware() -> dict:
@@ -62,11 +63,12 @@ def get_config():
     config.leader_gripper_open_pos = 2280
     config.leader_gripper_closed_pos = 1670
 
-    # Home pose, 14-D [L j1..j6, L grip, R j1..j6, R grip]. None = no homing (start where the
-    # arms are). Record it with `python -m client.dk1_setup_hardware --record_home`.
-    reset = hw.get("reset_joints")
-    config.reset_joints = None if reset is None else np.asarray(reset, dtype=np.float64)
-    config.reset_max_joint_speed = 0.5  # rad/s while homing
+    # Home pose, 14-D [L j1..j6, L grip, R j1..j6, R grip]. Default: the DK1 folded pose, which
+    # is the calibration zero (all joints 0, grippers open). To use another pose, add a 14-value
+    # "reset_joints" list to dk1_hardware.json.
+    reset = hw.get("reset_joints", DK1_FOLDED_POSE)
+    config.reset_joints = np.asarray(reset, dtype=np.float64)
+    config.reset_max_joint_speed = 0.1  # rad/s while homing (~6 deg/s for the joint with the farthest to go)
     config.wait_for_scene_reset = True  # press Enter after the manual scene reset
 
     # ---- observation / control ----------------------------------------------------------
@@ -77,13 +79,15 @@ def get_config():
 
     # Safety: per-step joint change limit (rad) w.r.t. the measured joints, used for BOTH demo
     # collection and policy rollouts (demos store the clipped action, so the policy never learns
-    # moves larger than RL allows). 0.1 rad @ 15 Hz = 1.5 rad/s. Lower it if rollouts are too fast.
-    config.max_joint_delta_per_step = 0.1
+    # moves larger than RL allows). It bounds how far the command leads the measured pose. 0.25 rad
+    # (~14 deg) felt right in teleop with smoothing on; 0.1-0.2 felt held back. Lower it if policy
+    # rollouts are too fast.
+    config.max_joint_delta_per_step = 0.25
     # Optional EE box per arm in that arm's base frame (m), [[xmin,xmax],[ymin,ymax],[zmin,zmax]].
     config.ee_bounds = None
-    # Off by default. If motion at 15 Hz looks jerky on the robot, set e.g. 100.0: a thread then
-    # ramps each new target over one control period instead of stepping it.
-    config.command_interp_hz = 0.0
+    # On: 15 Hz steps caused micro jerks in teleop. A 100 Hz thread
+    # ramps each new target over one control period (adds ~66 ms lag). 0.0 = off.
+    config.command_interp_hz = 100.0
     # Pose the arms move to before the motors are disabled on close (they go limp there).
     # Defaults to the home pose; set "rest_joints" in dk1_hardware.json to use another pose.
     rest = hw.get("rest_joints", reset)

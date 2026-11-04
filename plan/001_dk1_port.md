@@ -464,11 +464,11 @@ Not verified: anything that needs hardware or the `pi05_base` download.
 Additions beyond the plan:
 
 - `client/dk1_setup_hardware.py` writes `configs/task/dk1_hardware.json` (ports by
-  unplug/replug, cameras by preview, `--record_home`, `--check`). `dk1_base.py` reads it.
+  unplug/replug, cameras by preview, `--check`). `dk1_base.py` reads it.
 - Clutch: the default is a second terminal (`python -m client.teleop.clutch`, SPACE
   toggles, UDP), because pynput does not see Wayland terminals. A bare Enter in the main
   terminal blocks `success_detector_manual`, so do not use it as a key.
-- One per-step joint cap for collection and RL (`max_joint_delta_per_step`, 0.1 rad).
+- One per-step joint cap for collection and RL (`max_joint_delta_per_step`, 0.25 rad, measured from the follower pose), with 100 Hz command smoothing on.
 - `run_client` sends a hold (all `-1`) instead of zeros for NaN actions on DK1.
 - `BiDK1Follower` bug confirmed: `_motors_ft` uses `.motors`, but it is only reached through
   `observation_features`. `DK1Env` drives two `DK1Follower`s by default

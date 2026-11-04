@@ -85,31 +85,19 @@ motors and calibration on their own:
 `third_party/trlc-dk1/examples/follower_read_position.py`. Edit the port at the top of
 the file first.
 
-## Record the home pose
+## Home pose
 
-The home pose is where every episode starts. RL and eval refuse to run without it.
+Nothing to do. The home pose is where every episode starts, and where the arms park
+before the motors are disabled on close. It is the DK1 folded pose: all joints at `0`
+(the calibration zero), grippers open (`DK1_FOLDED_POSE` in `configs/task/dk1_base.py`).
+To override it, add a `"reset_joints"` (or, for parking only, `"rest_joints"`) list to
+the JSON file with 14 values in the `[L j1..j6, L grip, R j1..j6, R grip]` order.
 
-1. Start mirrored teleoperation:
+Commit the hardware file:
 
-   ```bash
-   python -m client.dk1_setup_hardware --record_home
-   ```
-
-   The followers ease onto the leaders. This also checks that plain teleoperation works.
-2. Move the leaders to a home pose that has a clear view of the workspace, then press
-   **Enter**. The script saves `reset_joints` with the grippers open.
-3. On close, the env moves the arms to the home pose and then disables the motors, so
-   the arms go limp from home. Optional: to use a different pose, add a `"rest_joints"`
-   entry to the JSON file with 14 values in the `[L j1..j6, L grip, R j1..j6, R grip]`
-   order.
-4. Commit the hardware file:
-
-   ```bash
-   git add configs/task/dk1_hardware.json && git commit -m "DK1 lab hardware config"
-   ```
-
-**Check:** `reset_joints` in the JSON file has 14 values that look sensible: joints in
-radians, grippers at `0`.
+```bash
+git add configs/task/dk1_hardware.json && git commit -m "DK1 lab hardware config"
+```
 
 ## Set the task
 
@@ -159,7 +147,8 @@ python -m client.collect_data_dk1 --task_config configs/task/dk1_task.py --test_
 4. Watch the `timing ms:` lines. `work` must stay under the 66.7 ms budget at 15 Hz.
 5. At each reset, read the `per-step joint cap hit on N/M steps` line. If it's high at your
    normal teleoperation speed, raise `max_joint_delta_per_step` in `dk1_base.py`.
-6. If motion looks jerky, set `config.command_interp_hz = 100.0` in `dk1_base.py`.
+6. Motion should be smooth: `config.command_interp_hz = 100.0` (on by default) ramps each 15 Hz
+   target. If it still jerks, check the driver gains; if it feels held back, check the cap-hit line.
 7. Press **Ctrl+C** to stop, then hold the arms when prompted.
 
 **Check:** episodes start and end as expected, `work` fits the budget, and motion is
@@ -278,12 +267,13 @@ press **Space**. In wandb (`expo_ft_dk1`), the success rate climbs over episodes
 | Symptom | What to do |
 |---|---|
 | `... is not set; run python -m client.dk1_setup_hardware` | `dk1_hardware.json` is missing or incomplete. Rerun the setup script. |
-| `reset_joints is not set` | Record the home pose (see the "Record the home pose" section). |
+| `reset_joints is not set` | Should not happen with the folded-pose default; check `dk1_base.py`. |
 | `DK1 intervention setup failed` at client start | Check the leader ports, and make sure no other process uses UDP port 8765. To run without interventions, set `intervention.enabled = False`. |
 | `[intervention] !!! ... RELEASING TO POLICY CONTROL` | The leaders failed to read several times in a row. Check their USB cables and power. |
 | One arm moves when the other should | Left and right are swapped. Swap the ports in `dk1_hardware.json`. |
 | Camera frames time out | Add `"fourcc": "MJPG"`, lower the resolution, or put the cameras on separate USB controllers. |
-| Jerky motion | Set `command_interp_hz = 100.0`, or lower `max_joint_delta_per_step`. |
+| Jerky motion | Make sure `command_interp_hz = 100.0` is set in `dk1_base.py`. |
+| Follower lags or feels held back | Raise `max_joint_delta_per_step` (default 0.25); with smoothing on, values below 0.25 felt sluggish. |
 | Follower connection fails with the default per-arm classes | The vendored plugin lives in `third_party/trlc-dk1`; patch it there. `use_bimanual_class=True` switches to `BiDK1Follower`, which has a known feature-listing bug that `DK1Env` avoids. |
 
 For design decisions and background, see `plan/001_dk1_port.md`.

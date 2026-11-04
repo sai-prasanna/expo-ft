@@ -46,7 +46,7 @@ flags.DEFINE_bool("test_detector", False, "Never save; on done reset and keep lo
 flags.DEFINE_integer("video_save_width", 320, "Width of saved MP4 frames.")
 flags.DEFINE_integer("video_save_height", 240, "Height of saved MP4 frames.")
 flags.DEFINE_float("motion_threshold", 0.03, "Leader joint motion (rad) that starts recording.")
-flags.DEFINE_float("sync_max_delta", 0.02, "Per-step joint limit (rad) while the follower syncs to the leaders.")
+flags.DEFINE_float("sync_max_delta", 0.25, "Per-step joint limit (rad) while the follower syncs to the leaders.")
 flags.DEFINE_float("sync_tolerance", 0.05, "Follower-leader joint error (rad) that ends the sync phase.")
 flags.DEFINE_integer("mock_episode_steps", 30, "mock=True only: steps per scripted episode (auto success).")
 
