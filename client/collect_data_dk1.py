@@ -16,6 +16,11 @@ kept under <save_root>/success/<id>/, streaming MP4 previews), but:
 Episode flow: home -> manual scene reset (Enter) -> follower slowly syncs to the leaders ->
 move the leaders to start recording -> type 1/2 + Enter to end.
 
+With --gesture_control (default) only the first episode homes. After that, teleop runs
+continuously: come back home (reset_joints, shoulder/elbow joints) and hold still -> recording
+stops; squeeze BOTH leader triggers = keep, LEFT alone = discard -> idle (reset the scene, take
+your time) -> clearly move an arm -> the next episode starts (with 0.5 s of pre-roll at rest).
+
     python -m client.collect_data_dk1 --save_root data/dk1_task --num_episodes 20 \
         --task_config configs/task/dk1_task.py
     # no hardware:
@@ -23,6 +28,7 @@ move the leaders to start recording -> type 1/2 + Enter to end.
         --task_config configs/task/dk1_mock.py
 """
 
+import collections
 import os
 import shutil
 import time
@@ -34,6 +40,8 @@ import imageio
 import numpy as np
 from absl import app, flags
 from ml_collections import config_flags
+
+from client.teleop.episode_gestures import EpisodeGestureFSM, GestureParams
 
 FLAGS = flags.FLAGS
 
@@ -49,6 +57,21 @@ flags.DEFINE_float("motion_threshold", 0.03, "Leader joint motion (rad) that sta
 flags.DEFINE_float("sync_max_delta", 0.25, "Per-step joint limit (rad) while the follower syncs to the leaders.")
 flags.DEFINE_float("sync_tolerance", 0.05, "Follower-leader joint error (rad) that ends the sync phase.")
 flags.DEFINE_integer("mock_episode_steps", 30, "mock=True only: steps per scripted episode (auto success).")
+flags.DEFINE_bool("gesture_control", True,
+                  "Hands-free episodes (client/teleop/episode_gestures.py): recording starts when the "
+                  "leaders clearly move and stops when they come back home (reset_joints) and hold "
+                  "still; then squeeze BOTH leader triggers = keep, LEFT alone = discard, and it idles "
+                  "until you move an arm again. No homing between episodes. 1/2 + Enter still work.")
+flags.DEFINE_float("gesture_start_radius", 0.1, "Moving any leader joint this far (rad) from where the arms "
+                   "rest starts the next episode.")
+flags.DEFINE_float("gesture_arm_radius", 0.6, "Shoulder/elbow (j1-j3) distance (rad) from home the arms must "
+                   "reach before an episode can auto-stop.")
+flags.DEFINE_float("gesture_stop_radius", 0.4, "Shoulder/elbow (j1-j3) within this (rad) of the home pose "
+                   "(task config reset_joints) and still for --gesture_hold_s = episode end.")
+flags.DEFINE_float("gesture_hold_s", 0.5, "Stillness at home that ends an episode.")
+flags.DEFINE_float("gesture_trigger_s", 0.6, "How long the keep/discard trigger squeeze must be held.")
+flags.DEFINE_float("gesture_preroll_s", 0.5, "Seconds of resting frames from before the start kept at the "
+                   "beginning of each episode.")
 
 
 def smallest_missing_id(dir_path: str) -> int:
@@ -175,26 +198,94 @@ def _sync_follower_to_leaders(env, controller, max_delta: float, tol: float, tim
     return False
 
 
+def _joint_name(i12: int) -> str:
+    return f"{'L' if i12 < 6 else 'R'}j{i12 % 6 + 1}"
+
+
+def _gesture_status(fsm, rec_s: float) -> str:
+    s, p, last = fsm.state, fsm.p, fsm.last
+    g = last.get("grips", np.zeros(2))
+    trig = f"triggers {g[0]:.2f}/{g[1]:.2f}"
+    j = last["far_joint"]
+    home = (f"from home {last['dist']:.2f} {'ok' if last['dist'] < p.stop_radius else 'X'} (< {p.stop_radius:.2f}; "
+            f"farthest {_joint_name(j)} now {last['q'][j]:+.2f} home {last['home'][j]:+.2f})")
+    speed = (f"speed {last['speed']:.2f} {'ok' if last['speed'] < p.still_speed else 'X'} "
+             f"(< {p.still_speed:.2f} rad/s; fastest {_joint_name(last['fast_joint'])})")
+    if s == "idle" and not fsm.ready:
+        return f"[gesture IDLE] waiting for the arms at home, still, triggers open | {home} | {speed} | {trig}"
+    if s == "idle":
+        return f"[gesture IDLE] ready: move an arm to start | moved {last['moved']:.2f} (start > {p.start_radius:.2f})"
+    if s == "decide":
+        return f"[gesture DECIDE] squeeze BOTH = keep, LEFT alone = discard | {trig}"
+    return (f"[gesture REC {rec_s:5.1f}s] armed={'yes' if fsm.armed else f'no (go > {p.arm_radius:.2f} from home)'} | "
+            f"{home} | {speed} | still {fsm._count / fsm.hz:.1f}/{p.hold_s:.1f}s")
+
+
 def collect_trajectory(env, controller, save_filepath=None, recording_folderpath=None, test_detector=False):
     task_config = FLAGS.task_config
 
-    t_reset0 = time.perf_counter()
-    env.reset()
-    controller.reset_state()
-    print("[between-episode] env.reset()={:.2f}s".format(time.perf_counter() - t_reset0))
-    if not controller.mock:
-        _sync_follower_to_leaders(env, controller, FLAGS.sync_max_delta, FLAGS.sync_tolerance)
+    gesture = FLAGS.gesture_control and not controller.mock and not test_detector
+    fsm = getattr(controller, "gesture_fsm", None)
+    if not gesture or fsm is None:
+        # Home + manual scene reset + sync. In gesture mode only before the first episode; after
+        # that teleop runs continuously and the previous episode's end is the next start.
+        t_reset0 = time.perf_counter()
+        env.reset()
+        controller.reset_state()
+        print("[between-episode] env.reset()={:.2f}s".format(time.perf_counter() - t_reset0))
+        if not controller.mock:
+            _sync_follower_to_leaders(env, controller, FLAGS.sync_max_delta, FLAGS.sync_tolerance)
+        if gesture:
+            fsm = controller.gesture_fsm = EpisodeGestureFSM(env.control_hz, GestureParams(
+                start_radius=FLAGS.gesture_start_radius, arm_radius=FLAGS.gesture_arm_radius,
+                stop_radius=FLAGS.gesture_stop_radius, hold_s=FLAGS.gesture_hold_s,
+                gesture_s=FLAGS.gesture_trigger_s),
+                home=np.asarray(env.reset_joints, dtype=np.float64)[np.r_[0:6, 7:13]])
 
     traj_writer = H5TrajWriter(save_filepath) if save_filepath else None
     mp4_writers = {}
     start_recording = controller.mock  # mock: record from the first step
     leader_start = controller.to_follower(controller.leaders.get())
     episode_success = None
+    end_reason = "manual"
     last_control_start = None
     loop_ms = []
     n_steps = 0
+    stopped = False  # gesture mode: back home, recording over, waiting for keep/discard
+    preroll = collections.deque(maxlen=max(1, int(round(FLAGS.gesture_preroll_s * env.control_hz))))
 
-    print("Move the leader arms to start recording. Type 1 + Enter = success, 2 + Enter = discard.")
+    def write_frame(saved_obs, executed, leader):
+        nonlocal n_steps
+        if recording_folderpath and not mp4_writers:
+            video_dir = os.path.join(os.path.dirname(recording_folderpath), "recordings", "MP4")
+            os.makedirs(video_dir, exist_ok=True)
+            for key, val in saved_obs.items():
+                if isinstance(val, np.ndarray) and val.ndim == 3 and val.shape[-1] == 3:
+                    mp4_writers[key] = imageio.get_writer(
+                        os.path.join(video_dir, f"{key}.mp4"), fps=int(env.control_hz), format="ffmpeg",
+                        codec="libx264", output_params=["-preset", "ultrafast", "-crf", "20"],
+                    )
+        n_steps += 1
+        if traj_writer is not None:
+            traj_writer.write_timestep({
+                "saved_observation": saved_obs,
+                "action": {
+                    "action14": np.asarray(executed, dtype=np.float32),
+                    "leader14": np.asarray(leader, dtype=np.float32),
+                },
+            })
+        vid_size = (FLAGS.video_save_width, FLAGS.video_save_height)
+        for key, writer in mp4_writers.items():
+            f = np.asarray(saved_obs[key], dtype=np.uint8)
+            if (f.shape[1], f.shape[0]) != vid_size:
+                f = cv2.resize(f, vid_size, interpolation=cv2.INTER_LINEAR)
+            writer.append_data(f)
+
+    if gesture:
+        print("[gesture] Idle. Reset the scene, then move an arm to start recording. Come back home and "
+              "hold still to stop, then squeeze BOTH triggers = keep, LEFT alone = discard. (1/2 + Enter still work.)")
+    else:
+        print("Move the leader arms to start recording. Type 1 + Enter = success, 2 + Enter = discard.")
     try:
         while True:
             t_start = time.perf_counter()
@@ -214,6 +305,8 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
                     controller.reset_state()
                     continue
                 episode_success = success
+                if gesture:
+                    fsm.reset()  # keyboard end: back to idle
                 return {"success": success, "failure": not success, "steps": n_steps}
 
             action, leader = controller.forward()
@@ -227,43 +320,53 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
             info = env.step(action)  # same per-step cap as RL rollouts
             t_step = time.perf_counter()
 
-            if not start_recording:
+            event = None
+            if gesture:
+                event = fsm.update(controller.to_follower(leader)[np.r_[0:6, 7:13]], leader[[6, 13]])
+                if event == "ready":
+                    print("[gesture] Ready: move an arm to start recording.")
+                elif event == "start":
+                    start_recording = True
+                    for frame in preroll:  # the resting frames just before the motion
+                        write_frame(*frame)
+                    preroll.clear()
+                elif fsm.state == "idle" and fsm.ready:
+                    preroll.append((saved_obs, info["executed_action"], leader))
+            elif not start_recording:
                 moved = np.max(np.abs(controller.to_follower(leader) - leader_start)[np.r_[0:6, 7:13]])
                 grip = np.max(np.abs(leader[[6, 13]] - leader_start[[6, 13]]))
                 if moved > FLAGS.motion_threshold or grip > 0.1:
                     start_recording = True
-            if start_recording and recording_folderpath and not mp4_writers:
-                video_dir = os.path.join(os.path.dirname(recording_folderpath), "recordings", "MP4")
-                os.makedirs(video_dir, exist_ok=True)
-                for key, val in saved_obs.items():
-                    if isinstance(val, np.ndarray) and val.ndim == 3 and val.shape[-1] == 3:
-                        mp4_writers[key] = imageio.get_writer(
-                            os.path.join(video_dir, f"{key}.mp4"), fps=int(env.control_hz), format="ffmpeg",
-                            codec="libx264", output_params=["-preset", "ultrafast", "-crf", "28"],
-                        )
+                    print("start recording")
+            if event == "start":
                 print("start recording")
 
-            if start_recording:
-                n_steps += 1
-                if traj_writer is not None:
-                    traj_writer.write_timestep({
-                        "saved_observation": saved_obs,
-                        "action": {
-                            "action14": np.asarray(info["executed_action"], dtype=np.float32),
-                            "leader14": np.asarray(leader, dtype=np.float32),
-                        },
-                    })
-                vid_size = (FLAGS.video_save_width, FLAGS.video_save_height)
-                for key, writer in mp4_writers.items():
-                    f = np.asarray(saved_obs[key], dtype=np.uint8)
-                    if (f.shape[1], f.shape[0]) != vid_size:
-                        f = cv2.resize(f, vid_size, interpolation=cv2.INTER_LINEAR)
-                    writer.append_data(f)
+            if start_recording and not stopped:
+                write_frame(saved_obs, info["executed_action"], leader)
             t_rec = time.perf_counter()
+
+            if event == "stop":
+                stopped = True
+                print(f"[gesture] Back home after {n_steps / env.control_hz:.1f} s; recording stopped. "
+                      "Squeeze BOTH triggers = keep, LEFT alone = discard.")
+            elif event in ("keep", "discard"):
+                episode_success = event == "keep"
+                end_reason = event
+                print({"keep": "[gesture] KEEP.", "discard": "[gesture] DISCARD."}[event]
+                      + " Idle: reset the scene, then move an arm to start the next episode.")
+                return {"success": episode_success, "failure": not episode_success, "steps": n_steps,
+                        "end_reason": end_reason}
 
             ms = lambda a, b: (b - a) * 1000.0  # noqa: E731
             work = ms(t_start, t_rec) - ms(t_ctrl, t_sleep)
             loop_ms.append(work)
+            if gesture:
+                # A 2 Hz status line instead of per-step timing, so the reason a stop is not
+                # firing is visible (loop-rate summary still prints at the end of the episode).
+                every = 5.0 if fsm.state == "idle" and fsm.ready else 0.5  # quiet while you reset the scene
+                if len(loop_ms) % max(1, int(env.control_hz * every)) == 0:
+                    print(_gesture_status(fsm, n_steps / env.control_hz), flush=True)
+                continue
             print(
                 f"timing ms: read_obs={ms(t_start, t_cam):.1f} transform={ms(t_cam, t_tf):.1f} "
                 f"info={ms(t_tf, t_info):.1f} leader={ms(t_info, t_ctrl):.1f} sleep={ms(t_ctrl, t_sleep):.1f} "
@@ -278,7 +381,8 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
                 pass
         if traj_writer is not None:
             traj_writer.close(metadata={"language_instruction": task_config.language_instruction,
-                                        "control_hz": env.control_hz, "success": bool(episode_success)})
+                                        "control_hz": env.control_hz, "success": bool(episode_success),
+                                        "end_reason": end_reason})
         if loop_ms:
             arr = np.asarray(loop_ms)
             budget = 1000.0 / env.control_hz

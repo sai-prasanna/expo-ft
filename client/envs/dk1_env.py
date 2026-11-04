@@ -308,7 +308,7 @@ class DK1Env:
         use_bimanual_class: bool = False,
         leader_gripper_open_pos: int = 2280,
         leader_gripper_closed_pos: int = 1670,
-        image_size=(180, 320),
+        image_size=(240, 320),
         control_hz: float = 15,
         language_instruction: str = "",
         reset_joints=None,

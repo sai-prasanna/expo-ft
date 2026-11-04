@@ -162,6 +162,28 @@ Collect about 20 successful demos:
 bash scripts/dk1_task/collect_data.sh
 ```
 
+Episodes are hands-free by default (`--gesture_control`; `--nogesture_control` restores the
+keyboard-only flow). Only the first episode homes and waits for **Enter**. After that, teleop runs
+continuously, and every episode goes home → task → home:
+
+1. **Idle.** Nothing is recorded. Reset the scene; take as long as you need. It becomes ready
+   once the leaders are at home, still, with the triggers open (`[gesture] Ready`).
+2. **Start.** Clearly move an arm (any joint more than 0.1 rad): recording starts. The 0.5 s
+   of rest just before the motion is kept, so every episode starts at rest. Slow sag while you
+   are away and the triggers never start an episode.
+3. **Stop.** Bring the leaders back home and hold still for 0.5 s. "Home" is loose: only the
+   shoulder/elbow joints (j1–j3) count, within 0.4 rad of `reset_joints`; wrists can be
+   anywhere. It can only stop after the arms have gone 0.6 rad from home, so working close to
+   home never cuts an episode short.
+4. **Decide.** It waits for you. Squeeze (above 0.5) and hold for 0.6 s: **both triggers =
+   keep**, **left trigger alone = discard** (right alone does nothing). Then back to 1.
+
+`1`/`2` + **Enter** still end an episode. Nothing is ever dropped without your gesture. Each
+`traj.hdf5` stores how it ended in the `end_reason` attribute. A `[gesture …]` status line
+(every 0.5 s; every 5 s while idle) shows the distance from home with the joint that's furthest
+off, the joint speed, and whether each check passes (`ok`/`X`). The radii and timings are
+flags (`--gesture_*`, see `client/collect_data_dk1.py`).
+
 Only successful episodes are kept, in `data/dk1_task/success/<id>/traj.hdf5`, with MP4
 previews next to them in `recordings/MP4/`. Running the script again with the same folder
 adds episodes; it never overwrites them.

@@ -68,11 +68,11 @@ def get_config():
     # "reset_joints" list to dk1_hardware.json.
     reset = hw.get("reset_joints", DK1_FOLDED_POSE)
     config.reset_joints = np.asarray(reset, dtype=np.float64)
-    config.reset_max_joint_speed = 0.1  # rad/s while homing (~6 deg/s for the joint with the farthest to go)
+    config.reset_max_joint_speed = 0.3  # rad/s while homing (~17 deg/s for the joint with the farthest to go)
     config.wait_for_scene_reset = True  # press Enter after the manual scene reset
 
     # ---- observation / control ----------------------------------------------------------
-    config.image_size = (180, 320)  # authors' DROID size; the model pads/resizes to 224x224
+    config.image_size = (240, 320)  # 4:3 to match the 640x480 cameras (no padding); the model pads to 224x224
     config.control_hz = 15
     config.auto_reset_steps = 300  # 20 s at 15 Hz
     config.ignore_auto_reset = False

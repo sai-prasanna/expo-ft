@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Teleoperated demos with the leader arms (client_dk1 venv). Type 1+Enter = success, 2+Enter = discard.
+# Teleoperated demos with the leader arms (client_dk1 venv). Move an arm to start, come back home and hold still to stop,
+# then squeeze BOTH triggers = keep, LEFT alone = discard (1/2+Enter also work).
 # Reruns with the same SAVE_ROOT add episodes. One folder per task, e.g.
 #   SAVE_ROOT=data/dk1_pick PROMPT="pick up the cube" bash scripts/dk1_task/collect_data.sh
 source client_dk1/.venv/bin/activate
