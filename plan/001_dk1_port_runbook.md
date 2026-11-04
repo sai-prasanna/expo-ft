@@ -232,6 +232,24 @@ previews: all three cameras should be visible, with the correct left and right.
 
 The policy must succeed at least sometimes before RL is worth running.
 
+Before a new checkpoint touches the arms, check it without hardware:
+
+```bash
+.venv/bin/python scripts/dk1_task/check_policy_offline.py \
+    --ckpt checkpoints/expo_pi05_dk1_lora_finetune_sft/dk1_task_20_lora_sft/4000
+# Exact server pipeline on recorded demo frames (port 8199, never the robot's 8102):
+NUM_EPISODES=3 bash scripts/dk1_task/eval_policy.sh --client_port=8199 --nosave_video
+client_dk1/.venv/bin/python -m client.run_client --host=localhost --port=8199 \
+    --config_task_path=configs/task/dk1_replay.py
+```
+
+Predicted actions should be within a few hundredths of a radian of the demos, and the
+`[replay]` lines should show `over_cap_pct` near 0. `eval_policy.sh` runs `--only_base_actions`
+by default: with no RL checkpoint the EXPO critic and edit actor are untrained, and "full" mode
+made the arms thrash. For the first real rollouts use the robot client with
+`TASK_CONFIG=configs/task/dk1_task_safe.py` (0.1 rad/step joint cap), keep a hand on the
+e-stop, and expect ~16 s of stillness after the first Enter while the model compiles.
+
 1. On the GPU server, start the evaluator:
 
    ```bash
