@@ -12,7 +12,7 @@ SFT_CKPT="./checkpoints/expo_pi05_dk1_lora_finetune_sft/${DATA_ID}_lora_sft/4000
 python eval_droid_policy.py \
     --config_task=configs/task/dk1_task.py \
     --config=configs/model/expo_ft_pi_config.py \
-    --dataset_path=./data/dk1_task/success \
+    --dataset_path=./data/stack_green_blue/success \
     --num_data=1 \
     --client_host="$CLIENT_IP" \
     --client_port=8102 \

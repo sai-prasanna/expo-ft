@@ -560,6 +560,10 @@ class TrainConfig:
     seed: int = 42
     # Global batch size.
     batch_size: int = 32
+    # Gradient accumulation: each batch of `batch_size` is split into this many microbatches whose
+    # gradients are averaged before a single optimizer update. Peak activation memory scales with
+    # batch_size / grad_accum_steps; step counts and the LR schedule are unchanged.
+    grad_accum_steps: int = 1
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2

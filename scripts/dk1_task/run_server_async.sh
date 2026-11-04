@@ -10,7 +10,7 @@ SFT_CKPT="./checkpoints/expo_pi05_dk1_lora_finetune_sft/${DATA_ID}_lora_sft/4000
 
 python train_pi_robo_async.py \
     --config_task=configs/task/dk1_task.py \
-    --dataset_path=./data/dk1_task/success \
+    --dataset_path=./data/stack_green_blue/success \
     --num_data=20 \
     --offline_ratio=0 \
     --replan_steps=8 \

@@ -155,7 +155,32 @@ def train_step(
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    grad_fn = nnx.value_and_grad(loss_fn, argnums=diff_state)
+
+    k = config.grad_accum_steps
+    if k == 1:
+        loss, grads = grad_fn(model, train_rng, observation, actions)
+    else:
+        # Split [B, ...] -> [k, B/k, ...] and scan, so only one microbatch's activations are live.
+        micro = jax.tree.map(lambda x: x.reshape((k, x.shape[0] // k, *x.shape[1:])), (observation, actions))
+        take = lambda i: jax.tree.map(lambda x: x[i], micro)  # noqa: E731
+
+        def micro_grad(i, mb):
+            m = nnx.merge(state.model_def, state.params)
+            m.train()
+            return grad_fn(m, jax.random.fold_in(train_rng, i), *mb)
+
+        loss, grads = micro_grad(0, take(0))
+
+        def body(carry, xs):
+            i, mb = xs
+            l, g = micro_grad(i, mb)
+            return (carry[0] + l, jax.tree.map(jnp.add, carry[1], g)), None
+
+        rest = jax.tree.map(lambda x: x[1:], micro)
+        (loss, grads), _ = jax.lax.scan(body, (loss, grads), (jnp.arange(1, k), rest))
+        loss = loss / k
+        grads = jax.tree.map(lambda g: g / k, grads)
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -198,6 +223,11 @@ def main(config: _config.TrainConfig):
     if config.batch_size % jax.device_count() != 0:
         raise ValueError(
             f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
+        )
+    if config.batch_size % (config.grad_accum_steps * jax.device_count()) != 0:
+        raise ValueError(
+            f"Batch size {config.batch_size} must be divisible by grad_accum_steps ({config.grad_accum_steps}) "
+            f"x devices ({jax.device_count()})."
         )
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
