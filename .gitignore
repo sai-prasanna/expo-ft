@@ -14,3 +14,7 @@ assets/
 client/.venv/
 
 log/
+
+# local run logs / cluster fetches
+outputs/
+.cluster-runs/

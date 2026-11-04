@@ -1,0 +1,6 @@
+project: expo-ft
+defaults:
+  cluster: ferranti
+  gpus: 2
+  time: 06:00:00
+clusters: {}

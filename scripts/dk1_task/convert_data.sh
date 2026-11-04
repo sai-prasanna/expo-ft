@@ -4,7 +4,7 @@ source .venv/bin/activate
 
 MAX_EPISODES=20
 TASK_CONFIG="configs/task/dk1_task.py"
-DATA_DIR="./data/dk1_task/success"
+DATA_DIR="./data/stack_green_blue/success"
 REPO_NAME="expo_ft/dk1_task_${MAX_EPISODES}"
 
 uv run scripts/convert_dk1_data_to_lerobot.py \

@@ -13,8 +13,8 @@ def get_config():
     config.env_name = "dk1_task"
     # TODO(lab): the language prompt. It is baked into the LeRobot dataset as the task string,
     # so change it before converting demos.
-    config.language_instruction = "PLACEHOLDER: describe the task"
-    # Success (for the operator): PLACEHOLDER, e.g. "object lifted and held above the table".
+    config.language_instruction = "Stack the green cube on top of the blue cube"
+    # Success (for the operator): green cube resting on top of the blue cube, gripper released.
 
     config.control_hz = 15
     config.auto_reset_steps = 300
