@@ -244,8 +244,8 @@ client_dk1/.venv/bin/python -m client.run_client --host=localhost --port=8199 \
 ```
 
 Predicted actions should be within a few hundredths of a radian of the demos, and the
-`[replay]` lines should show `over_cap_pct` near 0. `eval_policy.sh` runs `--only_base_actions`
-by default: with no RL checkpoint the EXPO critic and edit actor are untrained, and "full" mode
+`[replay]` lines should show `over_cap_pct` near 0. Without an RL checkpoint the eval uses base
+(SFT) actions only, because the EXPO critic and edit actor are untrained; "full" mode with them
 made the arms thrash. For the first real rollouts use the robot client with
 `TASK_CONFIG=configs/task/dk1_task_safe.py` (0.1 rad/step joint cap), keep a hand on the
 e-stop, and expect ~16 s of stillness after the first Enter while the model compiles.

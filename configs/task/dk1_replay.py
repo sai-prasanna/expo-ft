@@ -1,7 +1,7 @@
 """DK1 task served from recorded demos instead of hardware (client/envs/dk1_replay_env.py).
 
 Use with the eval/learner server on a NON-robot port, e.g.:
-  ONLY_BASE=1 NUM_EPISODES=3 bash scripts/dk1_task/eval_policy.sh --client_port=8199 --nosave_video
+  NUM_EPISODES=3 bash scripts/dk1_task/eval_policy.sh --client_port=8199 --nosave_video
   client_dk1/.venv/bin/python -m client.run_client --host=localhost --port=8199 \
       --config_task_path=configs/task/dk1_replay.py
 """

@@ -97,6 +97,12 @@ def main(_):
         if step not in checkpoint_steps:
             raise ValueError(f"Step {step} not in checkpoint steps {checkpoint_steps}")
         logger.info("Will load checkpoint at step %s", step)
+    elif not FLAGS.only_base_actions:
+        # No RL checkpoint: the critic and edit actor would be freshly (randomly) initialised, so
+        # "full" mode would execute random edits picked by a random Q (made the DK1 arms thrash).
+        # Only the SFT base policy has trained weights, so evaluate it alone.
+        logger.warning("No RL checkpoint loaded: critic/edit actor are untrained; using base actions only.")
+        FLAGS.only_base_actions = True
 
     example_action = config_task.example_action
     # Dataset only for agent observation/action shapes (run one sample through transform)
