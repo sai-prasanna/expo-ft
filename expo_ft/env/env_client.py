@@ -199,6 +199,10 @@ class EnvClient:
         response = self._call_operation("get_info_for_step", {"env_id": env_id})
         return response["done"], response["success"], response["reward"], response["mask"]
 
+    def home(self, env_id: str) -> None:
+        """Open the grippers and move the robot to its home pose (DK1)."""
+        self._call_operation("home", {"env_id": env_id})
+
     def render(self, env_id: str) -> np.ndarray:
         """Return an (H, W, 3) uint8 RGB frame of the current env state (for eval videos)."""
         response = self._call_operation("render", {"env_id": env_id})
@@ -267,6 +271,10 @@ class EnvClientWrapper:
         ms = self.client.network_ms
         self.client.network_ms = 0.0
         return ms
+
+    def home(self):
+        """Open the grippers and move home. Not wrapped in `_call` (no env re-creation on failure)."""
+        return self.client.home(self.env_id)
 
     def render(self):
         """Return an (H, W, 3) uint8 RGB frame. Deliberately NOT wrapped in `_call`'s

@@ -283,6 +283,18 @@ async def _handle_environment_request(websocket):
                         }
                     await websocket.send(packer.pack(response))
 
+                elif operation == "home":
+                    env_id = request["env_id"]
+                    env = _env_storage.get(env_id)
+                    if env is None:
+                        response = {"status": "error", "message": f"Environment {env_id} not found"}
+                    elif not hasattr(env, "home"):
+                        response = {"status": "error", "message": "Environment does not support home"}
+                    else:
+                        env.home()
+                        response = {"status": "success"}
+                    await websocket.send(packer.pack(response))
+
                 elif operation == "render":
                     env_id = request["env_id"]
                     env = _env_storage.get(env_id)
@@ -320,6 +332,30 @@ async def _handle_environment_request(websocket):
         logger.error(f"Unexpected error in request handler: {e}", exc_info=True)
 
 
+def _home_all_envs(logger, why: str):
+    """Server gone (finished, crashed or killed): don't leave the arms frozen mid-task holding an
+    object. Open the grippers and move home; the env stays alive for the next server."""
+    for env in list(_env_storage.values()):
+        if hasattr(env, "home"):
+            logger.info("%s: opening grippers and homing the arms.", why)
+            try:
+                env.home()
+            except Exception as e:
+                logger.error("Homing failed: %r", e)
+
+
+def _close_all_envs(logger):
+    """Process exit (Ctrl-C included): park (open grippers, move to rest) and disconnect cleanly,
+    instead of dying with the motor threads running (that aborted with 'exception not rethrown')."""
+    for env in list(_env_storage.values()):
+        try:
+            if hasattr(env, "close"):
+                env.close()
+        except BaseException as e:
+            logger.error("Closing env failed: %r", e)
+    _env_storage.clear()
+
+
 async def _run_client(
     host: str,
     port: int,
@@ -348,6 +384,7 @@ async def _run_client(
                 logger.info("Connected to %s; serving operations.", uri)
                 await _handle_environment_request(websocket)
             logger.info("Connection closed; redialing in 5s ...")
+            _home_all_envs(logger, "server connection closed")
         except (OSError, websockets.exceptions.WebSocketException) as e:
             logger.info("Server not reachable (%s); retrying in 5s ...", e)
         await asyncio.sleep(5)
@@ -369,7 +406,12 @@ def main(args: Args) -> None:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     logging.getLogger("websockets.server").setLevel(logging.WARNING)
-    asyncio.run(main_async(args))
+    try:
+        asyncio.run(main_async(args))
+    except KeyboardInterrupt:
+        logging.getLogger(__name__).info("Ctrl-C: parking the arms and disconnecting (Ctrl-C again to skip the move).")
+    finally:
+        _close_all_envs(logging.getLogger(__name__))
 
 
 if __name__ == "__main__":

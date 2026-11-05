@@ -245,7 +245,7 @@ def success_detector_manual():
         return "keep_going"
 
     while True:
-        choice = _readline("[manual] Enter 1 for success, 2 for reset, 3 for keep going, then ENTER:")
+        choice = _readline("[manual] Enter 1 for success, 2 for failure (ends the episode), 3 for keep going, then ENTER:")
         if not choice:
             return "keep_going"
         choice = choice.strip()
@@ -253,7 +253,7 @@ def success_detector_manual():
             print("[manual] Success annotated.")
             return "success"
         if choice == "2":
-            print("[manual] Doing reset.")
+            print("[manual] Failure annotated; ending the episode.")
             return "reset"
         if choice == "3":
             print("[manual] Keep going.")

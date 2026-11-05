@@ -230,11 +230,23 @@ def main(_):
         host=FLAGS.client_host,
         port=FLAGS.client_port,
     )
-    print("resetting environment...")
-    env.reset()
-    print("environment reset")
-
-    time.sleep(10)
+    # Warm-up: compile the policy on a live observation before the first episode, so episode 1
+    # doesn't stall ~12 s on step 0. No env.reset() here: the episode loop resets (and asks the
+    # operator for Enter) itself, and a reset here meant a second Enter prompt at startup.
+    logger.info("Warming up the policy on one observation (compiling)...")
+    warm_t0 = time.time()
+    warm_obs = env.get_observation()
+    if hasattr(agent, "sample_pre_cache") and FLAGS.delay > 0:
+        warm_pre, _ = agent.sample_pre_cache(warm_obs, prefix_padded=None)
+        warm_chunk, _, _ = agent.sample_actions(warm_obs, precached=warm_pre, delay=0,
+                                                only_base_actions=FLAGS.only_base_actions)
+    elif model_cls == "RTCLearner" and FLAGS.delay > 0:
+        warm_chunk, _, _ = agent.sample_actions(warm_obs, only_base_actions=FLAGS.only_base_actions,
+                                                delay=FLAGS.delay, p1_observations=warm_obs, prefix_padded=None)
+    else:
+        warm_chunk, _, _ = agent.sample_actions(warm_obs, only_base_actions=FLAGS.only_base_actions)
+    jax.block_until_ready(warm_chunk)
+    logger.info("Warm-up done in %.1f s (actions discarded).", time.time() - warm_t0)
 
     successes = []
     episode_returns = []
@@ -267,6 +279,7 @@ def main(_):
         sample_info_history = []
         ep_return = 0.0
         ep_len = 0
+        trace = {"state": [], "action": [], "executed": [], "action_type": [], "t": []}
 
         def run_pre_cache(agent_snapshot, obs, prefix):
             compute_start = time.time()
@@ -310,7 +323,9 @@ def main(_):
                     prefix_cache,
                 )
 
-        for step in range(max_traj_len):
+        # +1: the client flags the step-limit timeout (and asks the operator for the outcome) on
+        # the observation after the last step, so the loop must fetch that observation.
+        for step in range(max_traj_len + 1):
             step_t0 = time.time()
             timing = {
                 "wait_ms": 0.0,
@@ -431,7 +446,17 @@ def main(_):
 
             last_control_start = time.time()
             t_act0 = time.time()
-            env.step(np.asarray(action).tolist())
+            step_ret = env.step(np.asarray(action).tolist())
+            trace["state"].append(np.asarray(observation["state"], dtype=np.float32))
+            trace["action"].append(np.asarray(action, dtype=np.float32).reshape(-1)[:14])
+            try:
+                executed, action_type = step_ret
+                trace["executed"].append(np.asarray(executed, dtype=np.float32).reshape(-1)[:14])
+                trace["action_type"].append(str(action_type))
+            except (TypeError, ValueError):
+                trace["executed"].append(np.full(14, np.nan, np.float32))
+                trace["action_type"].append("?")
+            trace["t"].append(last_control_start)
             timing["act_ms"] = (time.time() - t_act0) * 1000.0
 
             timing_total_ms = (time.time() - step_t0) * 1000.0
@@ -454,6 +479,8 @@ def main(_):
         episode_returns.append(ep_return)
         episode_lengths.append(ep_len)
         logger.info("  success=%s return=%.1f len=%d", success, ep_return, ep_len)
+        if trace["state"]:
+            _log_trace(trace, ep + 1, video_dir)
 
     n = len(successes)
     success_rate = float(np.mean(successes))
@@ -462,8 +489,39 @@ def main(_):
     logger.info("Evaluation complete: success_rate=%.2f (%d/%d) mean_return=%.2f mean_len=%.1f",
                 success_rate, int(np.sum(successes)), n, mean_return, mean_len)
     print(f"success_rate={success_rate:.2f} mean_return={mean_return:.2f} mean_len={mean_len:.1f}")
+    # Don't leave the arms frozen mid-task (e.g. gripping the cube) when the server exits.
+    try:
+        logger.info("Asking the client to open the grippers and move home...")
+        env.home()
+        logger.info("Robot is home.")
+    except Exception as e:
+        logger.warning("Could not home the robot at the end of the eval (%s); the client homes on disconnect.", e)
     if inference_executor is not None:
         inference_executor.shutdown(wait=True)
+
+
+def _log_trace(trace, ep, out_dir):
+    """Save a per-step trace and log how far the policy asked the arms to move vs what ran."""
+    logger = logging.getLogger(__name__)
+    st = np.stack(trace["state"])
+    act = np.stack(trace["action"])
+    exe = np.stack(trace["executed"])
+    arm = np.r_[0:6, 7:13]
+    req = np.abs(act[:, arm] - st[:, arm]).max(1)   # requested per-step jump (rad)
+    ran = np.abs(exe[:, arm] - st[:, arm]).max(1)   # jump after the client's clip
+    travel = np.abs(st[-1, arm] - st[0, arm]).max()
+    path = np.abs(np.diff(st[:, arm], axis=0)).sum(0).max() if len(st) > 1 else 0.0
+    for lo, hi in ((0, 30), (0, len(st))):
+        r, e = req[lo:hi], ran[lo:hi]
+        logger.info("  [trace ep %d steps %d-%d] requested |a-s| med=%.3f max=%.3f  executed med=%.3f max=%.3f",
+                    ep, lo, min(hi, len(st)) - 1, np.median(r), r.max(), np.nanmedian(e), np.nanmax(e))
+    logger.info("  [trace ep %d] arm travel start->end max=%.3f rad, path max=%.3f rad; grippers act mean L=%.2f R=%.2f",
+                ep, travel, path, act[:, 6].mean(), act[:, 13].mean())
+    if out_dir:
+        fn = os.path.join(out_dir, f"trace_ep{ep:03d}_{time.strftime('%H%M%S')}.npz")
+        np.savez(fn, state=st, action=act, executed=exe, t=np.asarray(trace["t"], float),
+                 action_type=np.asarray(trace["action_type"]))
+        logger.info("  [trace ep %d] saved %s", ep, fn)
 
 
 if __name__ == "__main__":

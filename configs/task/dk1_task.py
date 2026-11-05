@@ -17,6 +17,7 @@ def get_config():
     # Success (for the operator): green cube resting on top of the blue cube, gripper released.
 
     config.control_hz = 15
-    config.auto_reset_steps = 300
+    # Demos: 206-351 steps (mean 253) at 15 Hz; the policy runs slower than the operator.
+    config.auto_reset_steps = 450
 
     return config

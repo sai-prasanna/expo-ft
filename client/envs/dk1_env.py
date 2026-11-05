@@ -378,9 +378,10 @@ class DK1Env:
                                    max_gripper_torque=max_gripper_torque, use_bimanual_class=use_bimanual_class,
                                    interp_hz=command_interp_hz, interp_s=1.0 / self.control_hz)
             self._cams = _RealCameras(cameras)
-        # RL rollouts: connect leaders + clutch + IK now, so a broken intervention setup fails
-        # loudly at create_env instead of silently leaving the operator without a takeover.
-        if env_usage == "train" and self.intervention_cfg.get("enabled", True) and not self.mock:
+        # RL rollouts and evals: connect leaders + clutch + IK now, so a broken intervention setup
+        # fails loudly at create_env instead of silently leaving the operator without a takeover,
+        # and so the ~15 s connect doesn't freeze the arms in the middle of episode 1.
+        if env_usage in ("train", "eval") and self.intervention_cfg.get("enabled", True) and not self.mock:
             self._ensure_intervention()
 
     # ------------------------------------------------------------------ observation
@@ -497,7 +498,24 @@ class DK1Env:
             self._wait_for_enter("[DK1Env] Reset the scene, then press Enter to start the episode.")
         self._steps_since_reset = 0
         self.done, self.success = False, False
+        if not self.mock:
+            print("[DK1Env] Episode running. Any time: type 1 + Enter = SUCCESS, 2 + Enter = FAILURE "
+                  "(ends the episode). At the step limit you will be asked.", flush=True)
         return self.get_observation()
+
+    def _ask_outcome(self) -> bool:
+        """Blocking: the operator labels a timed-out episode. The arms hold their last command."""
+        while True:
+            print("[DK1Env] Step limit reached. Was it a success? Type 1 = SUCCESS, 2 = FAILURE, then Enter:",
+                  flush=True)
+            try:
+                with open("/dev/tty", "r") as tty:
+                    choice = tty.readline().strip()
+            except OSError:
+                choice = sys.stdin.readline().strip()
+            if choice in ("1", "2"):
+                print(f"[DK1Env] Labelled {'SUCCESS' if choice == '1' else 'FAILURE'}.", flush=True)
+                return choice == "1"
 
     def detect(self, raw_obs):
         """Override for an automatic success detector: returns (success, terminate)."""
@@ -524,6 +542,8 @@ class DK1Env:
             manual_stop = False
             success, terminate = self.detect(raw_obs)
             done = bool(success or terminate or time_stop)
+            if time_stop and not success and not self.mock:
+                success = self._ask_outcome()
         if done:
             print(f"Done! Success: {success}, Time stop: {time_stop}, Manual stop: {manual_stop}")
         self.done, self.success = done, success
@@ -598,15 +618,46 @@ class DK1Env:
         if self._clutch is not None and self._clutch.engaged:
             self._clutch.set_engaged(False)
 
+    def _open_grippers(self, hold_s: float = 0.7):
+        """Open both grippers while the arm joints hold their current pose."""
+        target = self._arms.get().copy()
+        if self._last_command is not None:  # hold the commanded arm pose, not the sagged measurement
+            target[np.r_[0:6, 7:13]] = self._last_command[np.r_[0:6, 7:13]]
+        target[6] = target[13] = 0.0
+        target = clip_to_limits(target)
+        for _ in range(max(1, int(hold_s * 50))):
+            self._arms.send(target, interpolate=False)
+            if not self.mock:
+                time.sleep(0.02)
+        self._last_command = target
+
+    def home(self):
+        """End-of-run / server-gone: open the grippers (drop whatever is held), then move to the home
+        pose at reset speed. The motors stay enabled, holding home."""
+        self._release_intervention()
+        if self.reset_joints is None:
+            print("[DK1Env] home(): no reset_joints set; only opening the grippers.", flush=True)
+            self._open_grippers()
+            return
+        print("[DK1Env] Opening grippers and moving home...", flush=True)
+        self._open_grippers()
+        target = self.reset_joints.copy()
+        target[6] = target[13] = 0.0
+        self._move_to(target)
+        print("[DK1Env] Home.", flush=True)
+
     def park(self):
-        """Before the motors are disabled (DK1Follower.disconnect() makes the arms go limp): move to
-        rest_joints, or, if none is set, ask the operator to support the arms."""
+        """Before the motors are disabled (DK1Follower.disconnect() makes the arms go limp): open the
+        grippers and move to rest_joints, or, if none is set, ask the operator to support the arms."""
         if self.mock:
             return
         try:
             if self.rest_joints is not None:
-                print("[DK1Env] moving to rest_joints before disabling the motors...")
-                self._move_to(self.rest_joints)
+                print("[DK1Env] opening grippers and moving to rest_joints before disabling the motors...")
+                self._open_grippers()
+                rest = self.rest_joints.copy()
+                rest[6] = rest[13] = 0.0
+                self._move_to(rest)
             else:
                 self._wait_for_enter("[DK1Env] !!! Motors are about to be DISABLED and the arms will fall. "
                                      "Support both arms, then press Enter.")
