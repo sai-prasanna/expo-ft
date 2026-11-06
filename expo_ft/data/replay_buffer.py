@@ -539,11 +539,18 @@ class PiReplayBuffer(Dataset):
                 _cross |= np.asarray(self.dataset_dict["dones"][_idx]) > 0.5
             jax_dataset_dict["valids"] = jax_dataset_dict["valids"] * (1.0 - _cross.astype(np.float32))
 
+        # At delay 0 the next_delayed_* entries are the same host arrays as next_*: upload once.
+        _uploaded = {}
+
         def to_jax_array(x):
             """Recursively convert numpy arrays to JAX arrays, handling nested dicts."""
             if isinstance(x, dict):
                 return {k: to_jax_array(v) for k, v in x.items()}
-            elif isinstance(x, (np.ndarray, np.generic)):
+            elif isinstance(x, np.ndarray):
+                if id(x) not in _uploaded:
+                    _uploaded[id(x)] = jnp.asarray(x)
+                return _uploaded[id(x)]
+            elif isinstance(x, np.generic):
                 return jnp.asarray(x)
             else:
                 try:
@@ -552,6 +559,9 @@ class PiReplayBuffer(Dataset):
                     return x
         
         jax_dataset_dict = to_jax_array(jax_dataset_dict)
+        # to_jax_array is a recursive closure (a reference cycle): without this the cycle kept
+        # every uploaded batch on the GPU until Python's cycle collector happened to run.
+        _uploaded.clear()
         # Host staging is reused next call: don't let it change under an in-flight copy.
         jax.block_until_ready(jax_dataset_dict)
 
@@ -561,6 +571,9 @@ class PiReplayBuffer(Dataset):
         openpi_batch = batch.copy()
         cams = self._gather_camera_keys
         prefixes = ["", "next_", "next_delayed_"]
+        # float32 images are 4x the uint8 ones; convert an array shared between prefixes
+        # (next_ / next_delayed_ at delay 0) only once.
+        converted = {}
 
         for prefix in prefixes:
             img_key = f"{prefix}image"
@@ -569,8 +582,11 @@ class PiReplayBuffer(Dataset):
             for cam in cams:
                 st = _critic_key_to_storage(cam)
                 img = openpi_batch.pop(f"{prefix}{st}")
-                if img.dtype == np.uint8:
-                    img = img.astype(np.float32) / 255.0 * 2.0 - 1.0
+                if img.dtype == np.uint8 and not getattr(self, "keep_uint8_images", False):
+                    key = id(img)
+                    if key not in converted:
+                        converted[key] = (img, img.astype(np.float32) / 255.0 * 2.0 - 1.0)
+                    img = converted[key][1]
                 openpi_batch[img_key][cam] = img
                 openpi_batch[f"{img_key}_mask"][cam] = openpi_batch.pop(f"{prefix}{st}_mask")
         return openpi_batch
