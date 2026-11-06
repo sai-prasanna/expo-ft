@@ -230,12 +230,14 @@ class _RealLeaders:
                 port=port, gripper_open_pos=gripper_open_pos, gripper_closed_pos=gripper_closed_pos))
             leader.connect()
             self.arms[side] = leader
+        self._lock = threading.Lock()  # the intervention thread and diagnostics may both read the bus
 
     def get(self) -> np.ndarray:
         out = []
-        for side in SIDES:
-            act = self.arms[side].get_action()
-            out.extend(act[k] for k in ARM_JOINT_KEYS)
+        with self._lock:
+            for side in SIDES:
+                act = self.arms[side].get_action()
+                out.extend(act[k] for k in ARM_JOINT_KEYS)
         a = np.asarray(out, dtype=np.float64)
         a[6], a[13] = np.clip(a[6], 0.0, 1.0), np.clip(a[13], 0.0, 1.0)
         return a
