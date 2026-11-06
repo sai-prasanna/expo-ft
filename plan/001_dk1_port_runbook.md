@@ -269,6 +269,33 @@ e-stop, and expect ~16 s of stillness after the first Enter while the model comp
 **Check:** the arms move toward the task, there are no sudden jumps, and some episodes
 succeed.
 
+## Run EXPO-FT without interventions
+
+The learner does not fit on the 32 GB 5090: after loading it holds 18.3 GiB and the first
+EXPO update runs out of memory even at batch 32 / utd 10 / actor batch 8. Run it on an H100
+(Ferranti) and forward its port to the robot PC, e.g. `ssh -N -L 8102:<node>:8102 ferranti`;
+`run_policy.sh` then dials `localhost` as usual. The per-step loop runs in the learner, so watch
+`timing/network_ms` in wandb.
+
+1. Terminal 1, the learner:
+
+   ```bash
+   bash scripts/dk1_task/run_server.sh
+   ```
+
+2. Terminal 2, the robot client (no leader arms or clutch needed):
+
+   ```bash
+   TASK_CONFIG=configs/task/dk1_task_rl.py bash scripts/dk1_task/run_policy.sh
+   ```
+
+   `dk1_task_rl.py` turns interventions off, caps joints at 0.2 rad/step and sets a
+   demo-derived EE box per arm.
+3. Per episode: reset the scene, press **Enter**, label with `1`/`2` + **Enter**.
+4. Episodes 1-10 roll out the SFT policy only (`--base_only_episodes=10`). Gradient updates
+   start after episode 10; from episode 11 the actions come from EXPO selection (critic +
+   edit actor), so expect more varied motion from then on. Keep a hand on the e-stop.
+
 ## Run EXPO-FT with interventions
 
 1. Optional but recommended: set `config.ee_bounds` in `dk1_base.py`, a box per arm

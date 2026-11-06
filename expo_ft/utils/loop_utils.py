@@ -63,11 +63,17 @@ class AsyncChunkSampler:
             return
         self.pending = self.executor.submit(self._run_pre_cache, agent, observation, self.prefix_cache)
 
-    def sample(self, agent, observation, metrics):
-        """Next chunk at a replan boundary. Returns ``(action_chunk, agent, sample_info)``."""
+    def sample(self, agent, observation, metrics, only_base_actions=False):
+        """Next chunk at a replan boundary. Returns ``(action_chunk, agent, sample_info)``.
+
+        ``only_base_actions`` (delay == 0 path only): base VLA sample, no critic/edit selection.
+        """
         if self.use_pre_cache:
             return self._sample_pre_cached(agent, observation, metrics)
-        action_chunk, agent, sample_info = agent.sample_actions(observation)
+        if only_base_actions:
+            action_chunk, agent, sample_info = agent.sample_actions(observation, only_base_actions=True)
+        else:
+            action_chunk, agent, sample_info = agent.sample_actions(observation)
         self._simulate_latency()
         return action_chunk, agent, sample_info
 
