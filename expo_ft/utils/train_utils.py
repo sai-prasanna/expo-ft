@@ -140,9 +140,19 @@ def get_batch_info(batch: Dict[str, Any]) -> Dict[str, float]:
         "states_std": float(np.std(batch["state"])),
         "states_max": float(np.max(batch["state"])),
         "states_min": float(np.min(batch["state"])),
-        "base_image_max": float(np.max(batch["image"]["base_0_rgb"])),
-        "base_image_min": float(np.min(batch["image"]["base_0_rgb"])),
-        "base_image_std": float(np.std(batch["image"]["base_0_rgb"])),
+        **_image_stats(batch["image"]["base_0_rgb"]),
+    }
+
+
+def _image_stats(img) -> Dict[str, float]:
+    """Base-camera stats in the model's [-1, 1] scale, on a slice (the full batch is ~1 GB)."""
+    img = np.asarray(img[:64])
+    if img.dtype == np.uint8:
+        img = img.astype(np.float32) / 255.0 * 2.0 - 1.0
+    return {
+        "base_image_max": float(np.max(img)),
+        "base_image_min": float(np.min(img)),
+        "base_image_std": float(np.std(img)),
     }
 
 
