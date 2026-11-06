@@ -28,6 +28,7 @@ import time
 
 import numpy as np
 
+from client.envs.dk1_safety import DK1Safety
 from client.envs.utils import process_image_for_obs
 from client.real_utils.detector import success_detector_manual
 
@@ -230,12 +231,14 @@ class _RealLeaders:
                 port=port, gripper_open_pos=gripper_open_pos, gripper_closed_pos=gripper_closed_pos))
             leader.connect()
             self.arms[side] = leader
+        self._lock = threading.Lock()  # the intervention thread and diagnostics may both read the bus
 
     def get(self) -> np.ndarray:
         out = []
-        for side in SIDES:
-            act = self.arms[side].get_action()
-            out.extend(act[k] for k in ARM_JOINT_KEYS)
+        with self._lock:
+            for side in SIDES:
+                act = self.arms[side].get_action()
+                out.extend(act[k] for k in ARM_JOINT_KEYS)
         a = np.asarray(out, dtype=np.float64)
         a[6], a[13] = np.clip(a[6], 0.0, 1.0), np.clip(a[13], 0.0, 1.0)
         return a
@@ -319,6 +322,8 @@ class DK1Env:
         ignore_auto_reset: bool = False,
         max_joint_delta_per_step: float | None = 0.1,
         ee_bounds=None,
+        right_base_in_left=None,
+        min_arm_distance=None,
         command_interp_hz: float = 0.0,
         rest_joints=None,
         intervention: dict | None = None,
@@ -338,7 +343,10 @@ class DK1Env:
         self.auto_reset_steps = int(auto_reset_steps)
         self.ignore_auto_reset = bool(ignore_auto_reset)
         self.max_joint_delta_per_step = max_joint_delta_per_step
-        self.ee_bounds = None if ee_bounds is None else {s: np.asarray(ee_bounds[s], float).reshape(3, 2) for s in SIDES}
+        self.safety = DK1Safety(ee_bounds, right_base_in_left, min_arm_distance)
+        if self.safety.active:
+            print(f"[DK1Env] Cartesian safety: EE box {'on' if self.safety.ee_bounds is not None else 'off'}, "
+                  f"arm-to-arm min distance {self.safety.min_dist if self.safety.min_dist is not None else 'off'}")
         self.intervention_cfg = dict(intervention or {})
         self.rest_joints = None if rest_joints is None else np.asarray(rest_joints, dtype=np.float64).reshape(14)
         self._closed = False
@@ -350,7 +358,6 @@ class DK1Env:
         self._intervention = None
         self._clutch = None
         self._leaders = None
-        self._kin = None
         self.prev_obs = None
         self.done, self.success = False, False
 
@@ -408,31 +415,6 @@ class DK1Env:
         return np.asarray(self._cams.read()["head"])
 
     # ------------------------------------------------------------------ action
-    def _kinematics(self):
-        if self._kin is None:
-            from client.teleop.mink_ik import DK1Kinematics
-            self._kin = DK1Kinematics()
-        return self._kin
-
-    def _enforce_ee_bounds(self, action14: np.ndarray, current14: np.ndarray) -> np.ndarray:
-        """If an arm's commanded EE position leaves its box, hold that arm's joints (gripper still moves)."""
-        if self.ee_bounds is None:
-            return action14
-        kin = self._kinematics()
-        a = action14.copy()
-        for side in SIDES:
-            sl = arm_slice(side)
-            pos, _ = kin.fk(a[sl][:6])
-            box = self.ee_bounds[side]
-            if np.any(pos < box[:, 0]) or np.any(pos > box[:, 1]):
-                cur_pos, _ = kin.fk(current14[sl][:6])
-                # allow motion that moves back toward the box
-                cur_out = np.maximum(box[:, 0] - cur_pos, 0) + np.maximum(cur_pos - box[:, 1], 0)
-                new_out = np.maximum(box[:, 0] - pos, 0) + np.maximum(pos - box[:, 1], 0)
-                if new_out.sum() >= cur_out.sum():
-                    a[sl.start:sl.start + 6] = current14[sl][:6]
-        return a
-
     def safe_action(self, action, max_delta: float | None = None) -> np.ndarray:
         """Clip to joint limits, per-step joint change and the optional EE box. Returns 14-D."""
         action = np.asarray(action, dtype=np.float64).reshape(-1)[:14]
@@ -444,8 +426,7 @@ class DK1Env:
         before = a.copy()
         a = clip_joint_delta(a, current, self.max_joint_delta_per_step if max_delta is None else max_delta)
         self._clip_count += int(not np.allclose(a, before))
-        a = self._enforce_ee_bounds(a, current)
-        return a
+        return self.safety.apply(a, current)
 
     def step(self, action, max_delta: float | None = None) -> dict:
         self._steps_since_reset += 1
@@ -489,6 +470,8 @@ class DK1Env:
         if self._steps_since_reset > 0:
             print(f"[DK1Env] per-step joint cap hit on {self._clip_count}/{self._steps_since_reset} steps "
                   f"({100.0 * self._clip_count / self._steps_since_reset:.0f}%) last episode")
+        if self._steps_since_reset > 0 and self.safety.active:
+            print(f"[DK1Env] Cartesian safety held the arms on: {self.safety.summary_and_reset()} steps last episode")
         self._clip_count = 0
         if self.reset_joints is not None:
             target = self.reset_joints.copy()
