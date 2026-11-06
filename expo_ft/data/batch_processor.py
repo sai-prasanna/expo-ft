@@ -25,6 +25,7 @@ class BatchProcessor:
         actor_success_only: bool,
         use_dagger_hil_sampling: bool,  # True for RTCLearner: actor batch from HIL chunks only
         dataset=None,
+        actor_batch_size=None,  # pi0.5 actor (success-only) batch; default = batch_size
     ):
         if dataset is not None:
             # offline_ratio=0: seed demos into the online replay buffer only.
@@ -67,8 +68,9 @@ class BatchProcessor:
             )
 
         if actor_success_only and not use_dagger_hil_sampling:
-            self._offline_actor_bs = int(batch_size * offline_ratio)
-            self._online_actor_bs = batch_size - self._offline_actor_bs
+            abs_ = int(actor_batch_size or batch_size)
+            self._offline_actor_bs = int(abs_ * offline_ratio)
+            self._online_actor_bs = abs_ - self._offline_actor_bs
 
         self._ep_buffer_start = replay_buffer._insert_index
 

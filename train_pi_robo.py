@@ -47,6 +47,7 @@ flags.DEFINE_integer("num_batch", 1, "Number of episodes per update batch (only 
 flags.DEFINE_integer("num_updates", 0, "Upstream-style fixed number of gradient updates per trigger (episode/step/batch). 0 = derive the count from --step_interval instead.")
 flags.DEFINE_integer("step_interval", 1, "One gradient update per this many collected transitions. update_type=step runs it every step_interval env steps; episode/batch runs the accumulated equivalent at the episode boundary (remainder carries over).")
 flags.DEFINE_integer("batch_size", 64, "Mini batch size.")
+flags.DEFINE_integer("actor_batch_size", 0, "Batch size of the pi0.5 actor update (success-only batch). 0 = --batch_size.")
 flags.DEFINE_integer("max_steps", 500_000, "Number of training steps.")
 flags.DEFINE_integer("num_data", 0, "Max number of offline demo episodes to load (0 = all).")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
@@ -70,6 +71,13 @@ flags.DEFINE_integer(
     "0 <= delay <= replan_steps. >0 enables the delayed + prefix-inpainted "
     "rollout and the matching delayed critic backup. Ignored by other learners.",
 )
+flags.DEFINE_integer(
+    "base_only_episodes", 10,
+    "Roll out base (SFT) actions only for the first N episodes, and in any case until the first "
+    "gradient update has run (updates start at the end of episode 11). EXPO selection with an "
+    "untrained critic / edit actor made the DK1 arms thrash. 0 = EXPO selection from the start.",
+)
+flags.DEFINE_integer("update_start_episodes", 10, "Gradient updates start once this many episodes are collected.")
 flags.DEFINE_float("sim_latency", 0.0, "Simulated extra inference latency in ms added to each sample_actions call; 0 disables.")
 
 flags.DEFINE_string("dataset_path", "", "Path to the dataset.")
@@ -86,6 +94,15 @@ config_flags.DEFINE_config_file(
     "File path to the task configuration.",
     lock_config=False,
 )
+
+
+def _gpu_mem():
+    try:
+        st = jax.local_devices()[0].memory_stats() or {}
+        g = lambda k: st.get(k, 0) / 2**30
+        return f"GPU mem: in use {g('bytes_in_use'):.1f} GiB, peak {g('peak_bytes_in_use'):.1f}, limit {g('bytes_limit'):.1f}"
+    except Exception as e:
+        return f"GPU mem: n/a ({e})"
 
 
 def main(_):
@@ -182,6 +199,7 @@ def main(_):
         actor_success_only=actor_success_only,
         use_dagger_hil_sampling=use_dagger_hil_sampling,
         dataset=dataset,
+        actor_batch_size=FLAGS.actor_batch_size or None,
     )
 
     critic_example = {
@@ -243,6 +261,15 @@ def main(_):
         host=FLAGS.client_host,
         port=FLAGS.client_port
     )
+    # Compile both sampling paths before the first reset (which waits for the operator's
+    # Enter), so neither the first step nor the switch to EXPO selection stalls the robot.
+    if not hasattr(agent, "sample_pre_cache"):
+        warm_t0 = time.time()
+        warm_obs = env.get_observation()
+        for only_base in (True, False):
+            warm_chunk, _, _ = agent.sample_actions(warm_obs, only_base_actions=only_base)
+            jax.block_until_ready(warm_chunk)
+        logging.info("Policy warm-up done in %.1f s (actions discarded). %s", time.time() - warm_t0, _gpu_mem())
     env.reset()
     logging.info(f"Created training environment {env.env_id}")
 
@@ -279,10 +306,15 @@ def main(_):
         with buffer_lock:
             return batch_processor.next_batch(rng)
 
+    updates_run = 0
+
     def run_agent_updates(num_updates: int, metrics: dict):
-        nonlocal agent, combine_rng, pending_batch
+        nonlocal agent, combine_rng, pending_batch, updates_run
+        if updates_run == 0:
+            logging.info("First gradient updates (%d). %s", num_updates, _gpu_mem())
+        updates_run += num_updates
         sink.flush_transitions()
-        for _ in tqdm.tqdm(range(num_updates), disable=not FLAGS.tqdm):
+        for u in tqdm.tqdm(range(num_updates), disable=not FLAGS.tqdm):
             update_start = time.time()
             if pending_batch is None:
                 pending_batch = prefetch_pool.submit(_fetch, combine_rng)
@@ -291,10 +323,21 @@ def main(_):
             pending_batch = prefetch_pool.submit(_fetch, combine_rng)
             metrics["batch_info"] = get_batch_info(batch)
             agent = agent.replace(rng=jax.device_put(agent.rng, replicated_sharding))
+            if updates_run == num_updates and u == 0:
+                try:  # XLA's own estimate of the update's GPU memory (logged once)
+                    a0 = agent.replace(_infer_cache=None)
+                    ma = type(a0)._update_jit.lower(a0, a0, batch, FLAGS.utd_ratio, actor_batch).compile().memory_analysis()
+                    logging.info("Update memory (GiB): args %.1f, out %.1f, temp %.1f, alias %.1f. %s",
+                                 ma.argument_size_in_bytes / 2**30, ma.output_size_in_bytes / 2**30,
+                                 ma.temp_size_in_bytes / 2**30, ma.alias_size_in_bytes / 2**30, _gpu_mem())
+                except Exception as e:
+                    logging.warning("Update memory analysis failed: %s", str(e)[:300])
             agent, update_info = agent.update(agent, batch, FLAGS.utd_ratio, actor_batch)
             training_log.record_update_time(time.time() - update_start, metrics)
             for k, v in update_info.items():
                 metrics[f"training/{k}"] = v
+            if updates_run == num_updates and u == 0:
+                logging.info("First update done. %s", _gpu_mem())
 
     def updates_due():
         """Upstream --num_updates: a fixed count per trigger; else one per step_interval transitions."""
@@ -339,7 +382,11 @@ def main(_):
             # Skip model inference while human is controlling.
             if not action_plan and action_type != "human":
                 sample_start = time.time()
-                action_chunk, agent, sample_info = sampler.sample(agent, observation, step_metrics)
+                only_base = FLAGS.base_only_episodes > 0 and (
+                    training_log.ep_count < FLAGS.base_only_episodes or updates_run == 0)
+                action_chunk, agent, sample_info = sampler.sample(
+                    agent, observation, step_metrics, only_base_actions=only_base)
+                step_metrics["sampling/only_base"] = float(only_base)
                 episode_log.sample_info_history.append(sample_info)
                 action_chunk = np.asarray(jax.device_get(action_chunk[:FLAGS.replan_steps]))
                 training_log.record_sample_time(time.time() - sample_start, step_metrics)
@@ -386,7 +433,7 @@ def main(_):
             sink.record_transition(i, transition)
             transitions_since_update += 1
 
-        can_update = training_log.ep_count >= 10 and i >= FLAGS.batch_size
+        can_update = training_log.ep_count >= FLAGS.update_start_episodes and i >= FLAGS.batch_size
         if FLAGS.update_type == "step" and can_update:
             if FLAGS.num_updates > 0:
                 run_agent_updates(FLAGS.num_updates, step_metrics)
