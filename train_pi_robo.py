@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 """Online RL fine-tuning of a pi0.5 policy on the real robot."""
+import gc
 import logging
 import os
 import threading
@@ -86,6 +87,37 @@ config_flags.DEFINE_config_file(
     "File path to the task configuration.",
     lock_config=False,
 )
+
+
+def _agent_arrays(agent):
+    tree = (agent, getattr(agent, "_infer_cache", None) or {})
+    return [x for x in jax.tree_util.tree_leaves(tree) if isinstance(x, jax.Array)]
+
+
+def _free_superseded(old_arrays, agent):
+    """Delete the GPU buffers of the pre-update agent that the new agent doesn't share.
+
+    The old agent's arrays outlived the update (2 extra pi0.5 copies, +15 GiB) and the second
+    update ran out of memory on an 80 GB H100. Arrays the new agent still owns (same object
+    or same device buffer) are kept.
+    """
+    new = _agent_arrays(agent)
+    keep_ids = {id(x) for x in new}
+    keep_ptrs = set()
+    for x in new:
+        try:
+            keep_ptrs.add(x.unsafe_buffer_pointer())
+        except Exception:
+            pass
+    for x in old_arrays:
+        if id(x) in keep_ids or x.is_deleted():
+            continue
+        try:
+            if x.unsafe_buffer_pointer() in keep_ptrs:
+                continue
+        except Exception:
+            continue  # can't verify it isn't shared: leave it
+        x.delete()
 
 
 def main(_):
@@ -182,6 +214,7 @@ def main(_):
         actor_success_only=actor_success_only,
         use_dagger_hil_sampling=use_dagger_hil_sampling,
         dataset=dataset,
+        keep_uint8_images=(model_cls == "EXPOLearner"),
     )
 
     critic_example = {
@@ -243,6 +276,13 @@ def main(_):
         host=FLAGS.client_host,
         port=FLAGS.client_port
     )
+    # Compile the policy before the first reset (which waits for the operator's Enter), so the
+    # first step of episode 1 doesn't stall the robot. Keep only the actions: holding the
+    # returned agent would pin the initial weights once updates replace them.
+    if not hasattr(agent, "sample_pre_cache"):
+        warm_t0 = time.time()
+        jax.block_until_ready(agent.sample_actions(env.get_observation())[0])
+        logging.info("Policy warm-up done in %.1f s (actions discarded).", time.time() - warm_t0)
     env.reset()
     logging.info(f"Created training environment {env.env_id}")
 
@@ -291,7 +331,10 @@ def main(_):
             pending_batch = prefetch_pool.submit(_fetch, combine_rng)
             metrics["batch_info"] = get_batch_info(batch)
             agent = agent.replace(rng=jax.device_put(agent.rng, replicated_sharding))
+            old_arrays = _agent_arrays(agent)
             agent, update_info = agent.update(agent, batch, FLAGS.utd_ratio, actor_batch)
+            _free_superseded(old_arrays, agent)
+            del old_arrays
             training_log.record_update_time(time.time() - update_start, metrics)
             for k, v in update_info.items():
                 metrics[f"training/{k}"] = v
@@ -414,6 +457,10 @@ def main(_):
                     run_agent_updates(updates_due(), step_metrics)
                     episodes_since_update = 0
 
+            # Update batches and superseded agents sit in reference cycles that only Python's
+            # cycle collector frees; on its own schedule GPU memory grew by GiBs between
+            # collections. Collect while the robot homes.
+            gc.collect()
             training_log.on_episode_done(episode_log, success, step_metrics)
             episode_log.reset()
             with buffer_lock:

@@ -25,7 +25,11 @@ class BatchProcessor:
         actor_success_only: bool,
         use_dagger_hil_sampling: bool,  # True for RTCLearner: actor batch from HIL chunks only
         dataset=None,
+        keep_uint8_images=False,  # learner converts images to float itself (EXPOLearner)
     ):
+        # uint8 images are 1/4 the GPU memory of float32 while batches wait in the queue.
+        replay_buffer.keep_uint8_images = keep_uint8_images
+        offline_replay_buffer.keep_uint8_images = keep_uint8_images
         if dataset is not None:
             # offline_ratio=0: seed demos into the online replay buffer only.
             if offline_ratio == 0 or use_dagger_hil_sampling:
@@ -43,7 +47,10 @@ class BatchProcessor:
         self.use_dagger_hil_sampling = use_dagger_hil_sampling
 
         replay_batch_multiplier = 1.0 if use_dagger_hil_sampling else (1 - offline_ratio)
+        # One queued batch: each holds batch_size * utd_ratio samples with float32 images on the
+        # GPU (~4.6 GB at 64 x 20), and the training loop already prefetches one ahead.
         self.replay_iterator = replay_buffer.get_iterator(
+            queue_size=1,
             sample_args={
                 "batch_size": int(batch_size * utd_ratio * replay_batch_multiplier),
             },
@@ -53,6 +60,7 @@ class BatchProcessor:
         self.offline_iterator = None
         if offline_ratio > 0 and not use_dagger_hil_sampling:
             self.offline_iterator = offline_replay_buffer.get_iterator(
+                queue_size=1,
                 sample_args={
                     "batch_size": int(batch_size * utd_ratio * offline_ratio),
                 },
