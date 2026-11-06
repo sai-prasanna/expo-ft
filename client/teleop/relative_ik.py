@@ -208,6 +208,7 @@ class InterventionThread:
         self._anchored_epoch = -1
         self._stop = threading.Event()
         self.last_error: Exception | None = None
+        self.last_leader: np.ndarray | None = None  # latest leader reading (only refreshed while engaged)
         self.max_consecutive_errors = int(max_consecutive_errors)
         self._errors = 0
         self.loop_ms = 0.0
@@ -245,6 +246,7 @@ class InterventionThread:
                 self._target = None
             return
         leader = self.read_leader()
+        self.last_leader = leader
         if epoch != self._anchored_epoch:
             self.controller.anchor(leader, self.read_follower())
             self._anchored_epoch = epoch

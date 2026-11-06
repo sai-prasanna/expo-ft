@@ -1,0 +1,29 @@
+{
+  "left_follower_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2.2.1:1.0",
+  "right_follower_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2.2.2:1.0",
+  "left_leader_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2.3.2:1.0",
+  "right_leader_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2.3.3:1.0",
+  "cameras": {
+    "left_wrist": {
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.2.3:1.0-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "rotation": 180
+    },
+    "right_wrist": {
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.2.4:1.0-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "rotation": 180
+    },
+    "head": {
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.3.1:1.0-video-index0",
+      "width": 640,
+      "height": 480,
+      "fps": 30,
+      "rotation": 180
+    }
+  }
+}
