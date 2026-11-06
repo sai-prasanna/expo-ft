@@ -269,6 +269,44 @@ e-stop, and expect ~16 s of stillness after the first Enter while the model comp
 **Check:** the arms move toward the task, there are no sudden jumps, and some episodes
 succeed.
 
+## Run EXPO-FT without interventions
+
+The learner needs an 80 GB GPU (update peak ~58 GiB at batch 64 / utd 20 / actor 64); the
+32 GB 5090 can't run the updates. Run it on Ferranti; the robot client stays on the robot PC
+and reaches it through an SSH tunnel. The per-step loop runs in the learner, so the robot PC
+needs gigabit ethernet (`cat /sys/class/net/enp4s0/speed` = 1000); at 100 Mbit the 690 KB of
+images per step takes ~60 ms of the 66.7 ms budget.
+
+1. Submit the learner (a few hours before the session; the H100 queue can take ~30 min):
+
+   ```bash
+   cluster submit ferranti --gpus 1 --time 08:00:00 --sbatch=--mem=96G -n dk1-rl-nohil \
+       -m "..." -- bash scripts/dk1_task/run_server_cluster.sh
+   ```
+
+   Checkpoints and the replay buffer go to `runs/expo-ft/shared/rl/expo_dk1_task_nohil`, so a
+   later job resumes the same run.
+2. When it runs, `cluster logs ferranti <runid>` shows `=== learner node: <node> ...`. On the
+   robot PC, open the tunnel and leave it running:
+
+   ```bash
+   ssh -N -L 8102:<node>:8102 ferranti
+   ```
+
+3. Start the robot client (no leader arms or clutch needed):
+
+   ```bash
+   TASK_CONFIG=configs/task/dk1_task_rl.py bash scripts/dk1_task/run_policy.sh
+   ```
+
+   `dk1_task_rl.py` turns interventions off, caps joints at 0.2 rad/step and sets a
+   demo-derived EE box per arm.
+4. Per episode: reset the scene, press **Enter**, label with `1`/`2` + **Enter**.
+5. Actions come from EXPO selection (8 pi0.5 samples + 8 edited at `edit_scale` 0.05, picked by
+   the critic) from episode 1; the critic and edit actor are untrained until updates start
+   after episode 10. The first update compiles for ~5 min while the arms are home. Keep a hand
+   on the e-stop.
+
 ## Run EXPO-FT with interventions
 
 1. Optional but recommended: set `config.ee_bounds` in `dk1_base.py`, a box per arm
