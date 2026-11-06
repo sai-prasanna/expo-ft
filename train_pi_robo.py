@@ -47,6 +47,7 @@ flags.DEFINE_integer("num_batch", 1, "Number of episodes per update batch (only 
 flags.DEFINE_integer("num_updates", 0, "Upstream-style fixed number of gradient updates per trigger (episode/step/batch). 0 = derive the count from --step_interval instead.")
 flags.DEFINE_integer("step_interval", 1, "One gradient update per this many collected transitions. update_type=step runs it every step_interval env steps; episode/batch runs the accumulated equivalent at the episode boundary (remainder carries over).")
 flags.DEFINE_integer("batch_size", 64, "Mini batch size.")
+flags.DEFINE_integer("actor_batch_size", 0, "Batch size of the pi0.5 actor update (success-only batch). 0 = --batch_size.")
 flags.DEFINE_integer("max_steps", 500_000, "Number of training steps.")
 flags.DEFINE_integer("num_data", 0, "Max number of offline demo episodes to load (0 = all).")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
@@ -70,6 +71,14 @@ flags.DEFINE_integer(
     "0 <= delay <= replan_steps. >0 enables the delayed + prefix-inpainted "
     "rollout and the matching delayed critic backup. Ignored by other learners.",
 )
+flags.DEFINE_integer(
+    "base_only_episodes", 10,
+    "Roll out base (SFT) actions only for the first N episodes, and in any case until the first "
+    "gradient update has run (updates start at the end of episode 11). EXPO selection with an "
+    "untrained critic / edit actor made the DK1 arms thrash. 0 = EXPO selection from the start.",
+)
+flags.DEFINE_integer("update_start_episodes", 10, "Gradient updates start once this many episodes are collected.")
+flags.DEFINE_boolean("log_live_arrays", False, "Debug: log live device arrays by shape at each episode end.")
 flags.DEFINE_float("sim_latency", 0.0, "Simulated extra inference latency in ms added to each sample_actions call; 0 disables.")
 
 flags.DEFINE_string("dataset_path", "", "Path to the dataset.")
@@ -86,6 +95,100 @@ config_flags.DEFINE_config_file(
     "File path to the task configuration.",
     lock_config=False,
 )
+
+
+def _gpu_mem():
+    try:
+        st = jax.local_devices()[0].memory_stats() or {}
+        g = lambda k: st.get(k, 0) / 2**30
+        return f"GPU mem: in use {g('bytes_in_use'):.1f} GiB, peak {g('peak_bytes_in_use'):.1f}, limit {g('bytes_limit'):.1f}"
+    except Exception as e:
+        return f"GPU mem: n/a ({e})"
+
+
+def _live_summary(top=12):
+    """Live device arrays grouped by (shape, dtype), largest total first (memory debugging)."""
+    try:
+        from collections import Counter
+        tot, cnt = Counter(), Counter()
+        for a in jax.live_arrays():
+            k = (tuple(a.shape), str(a.dtype))
+            tot[k] += a.nbytes
+            cnt[k] += 1
+        all_gib = sum(tot.values()) / 2**30
+        rows = [f"{cnt[k]}x {k[0]} {k[1]} = {v / 2**30:.2f} GiB" for k, v in tot.most_common(top)]
+        return f"live arrays {all_gib:.1f} GiB in {sum(cnt.values())} arrays; top: " + " | ".join(rows)
+    except Exception as e:
+        return f"live arrays: n/a ({e})"
+
+
+def _agent_arrays(agent):
+    tree = (agent, getattr(agent, "_infer_cache", None) or {})
+    return [x for x in jax.tree_util.tree_leaves(tree) if isinstance(x, jax.Array)]
+
+
+def _free_superseded(old_arrays, agent):
+    """Delete the GPU buffers of the pre-update agent that the new agent doesn't share.
+
+    Something keeps a reference to the old agent's arrays after an update (2 extra pi0.5
+    copies, +15 GiB), so the second update OOMed on an 80 GB H100. Arrays still owned by the
+    new agent (same object or same device buffer) are kept. Returns (count, GiB) freed.
+    """
+    new = _agent_arrays(agent)
+    keep_ids = {id(x) for x in new}
+    keep_ptrs = set()
+    for x in new:
+        try:
+            keep_ptrs.add(x.unsafe_buffer_pointer())
+        except Exception:
+            pass
+    n, nbytes = 0, 0
+    for x in old_arrays:
+        if id(x) in keep_ids or x.is_deleted():
+            continue
+        try:
+            if x.unsafe_buffer_pointer() in keep_ptrs:
+                continue
+        except Exception:
+            continue  # can't verify it isn't shared: leave it
+        nbytes += x.nbytes
+        x.delete()
+        n += 1
+    return n, nbytes / 2**30
+
+
+def _batch_holders(shape=(1280, 224, 224, 3), depth=6, limit=40):
+    """Debug: who references live update-batch image arrays (frames included)."""
+    import gc, types
+    try:
+        arrs = [a for a in jax.live_arrays() if tuple(a.shape) == shape]
+        skip = {id(arrs)}
+        chains = {}
+        for a in arrs:
+            chain, obj = [], a
+            for _ in range(depth):
+                refs = [r for r in gc.get_referrers(obj) if id(r) not in skip and r is not arrs]
+                if not refs:
+                    chain.append("<none>")
+                    break
+                r = refs[0]
+                skip.add(id(r))
+                if isinstance(r, types.FrameType):
+                    chain.append(f"frame:{r.f_code.co_name}@{r.f_code.co_filename.rsplit('/', 1)[-1]}:{r.f_lineno}")
+                    break
+                if isinstance(r, dict):
+                    d = "dict{" + ",".join(map(str, list(r.keys())[:4])) + "}"
+                elif hasattr(r, "__qualname__"):
+                    d = f"{type(r).__name__}:{r.__qualname__}"
+                else:
+                    d = type(r).__name__
+                chain.append(f"{d}(+{len(refs) - 1})")
+                obj = r
+            key = " <- ".join(chain)
+            chains[key] = chains.get(key, 0) + 1
+        return f"{len(arrs)} batch arrays; " + " || ".join(f"{n}x {c}" for c, n in list(chains.items())[:limit])
+    except Exception as e:
+        return f"batch_holders failed: {e!r}"
 
 
 def main(_):
@@ -182,6 +285,8 @@ def main(_):
         actor_success_only=actor_success_only,
         use_dagger_hil_sampling=use_dagger_hil_sampling,
         dataset=dataset,
+        actor_batch_size=FLAGS.actor_batch_size or None,
+        keep_uint8_images=(model_cls == "EXPOLearner"),
     )
 
     critic_example = {
@@ -217,6 +322,10 @@ def main(_):
         default_prompt=task_description,
         edit_action_xyzg=FLAGS.config_task.edit_action_xyzg,
     )
+    # The agent owns these now. Holding them here pins the initial pi0.5 weights (and the full
+    # target copy) on the GPU after the first update replaces them: +~16 GiB, and the second
+    # update then ran out of memory on an 80 GB H100.
+    del actor_train_state, target_actor_params
 
     start_step = 0
     if resuming:
@@ -243,6 +352,16 @@ def main(_):
         host=FLAGS.client_host,
         port=FLAGS.client_port
     )
+    # Compile both sampling paths before the first reset (which waits for the operator's
+    # Enter), so neither the first step nor the switch to EXPO selection stalls the robot.
+    if not hasattr(agent, "sample_pre_cache"):
+        warm_t0 = time.time()
+        warm_obs = env.get_observation()
+        for only_base in (True, False):
+            # Keep only the actions: the returned agent would pin the initial weights for the
+            # whole run once updates replace them (+15 GiB; the second update OOMed on an H100).
+            jax.block_until_ready(agent.sample_actions(warm_obs, only_base_actions=only_base)[0])
+        logging.info("Policy warm-up done in %.1f s (actions discarded). %s", time.time() - warm_t0, _gpu_mem())
     env.reset()
     logging.info(f"Created training environment {env.env_id}")
 
@@ -279,10 +398,15 @@ def main(_):
         with buffer_lock:
             return batch_processor.next_batch(rng)
 
+    updates_run = 0
+
     def run_agent_updates(num_updates: int, metrics: dict):
-        nonlocal agent, combine_rng, pending_batch
+        nonlocal agent, combine_rng, pending_batch, updates_run
+        if updates_run == 0:
+            logging.info("First gradient updates (%d). %s", num_updates, _gpu_mem())
+        updates_run += num_updates
         sink.flush_transitions()
-        for _ in tqdm.tqdm(range(num_updates), disable=not FLAGS.tqdm):
+        for u in tqdm.tqdm(range(num_updates), disable=not FLAGS.tqdm):
             update_start = time.time()
             if pending_batch is None:
                 pending_batch = prefetch_pool.submit(_fetch, combine_rng)
@@ -291,10 +415,20 @@ def main(_):
             pending_batch = prefetch_pool.submit(_fetch, combine_rng)
             metrics["batch_info"] = get_batch_info(batch)
             agent = agent.replace(rng=jax.device_put(agent.rng, replicated_sharding))
+            if updates_run == num_updates and u == 0:
+                logging.info("First batches on device (before update compile). %s", _gpu_mem())
+                logging.info("BEFORE first update: %s", _live_summary())
+            old_arrays = _agent_arrays(agent)
             agent, update_info = agent.update(agent, batch, FLAGS.utd_ratio, actor_batch)
+            n_freed, gib_freed = _free_superseded(old_arrays, agent)
+            del old_arrays
             training_log.record_update_time(time.time() - update_start, metrics)
             for k, v in update_info.items():
                 metrics[f"training/{k}"] = v
+            if updates_run == num_updates and u == 0:
+                logging.info("First update done; freed %d superseded arrays (%.1f GiB). %s",
+                             n_freed, gib_freed, _gpu_mem())
+                logging.info("AFTER first update: %s", _live_summary())
 
     def updates_due():
         """Upstream --num_updates: a fixed count per trigger; else one per step_interval transitions."""
@@ -339,7 +473,11 @@ def main(_):
             # Skip model inference while human is controlling.
             if not action_plan and action_type != "human":
                 sample_start = time.time()
-                action_chunk, agent, sample_info = sampler.sample(agent, observation, step_metrics)
+                only_base = FLAGS.base_only_episodes > 0 and (
+                    training_log.ep_count < FLAGS.base_only_episodes or updates_run == 0)
+                action_chunk, agent, sample_info = sampler.sample(
+                    agent, observation, step_metrics, only_base_actions=only_base)
+                step_metrics["sampling/only_base"] = float(only_base)
                 episode_log.sample_info_history.append(sample_info)
                 action_chunk = np.asarray(jax.device_get(action_chunk[:FLAGS.replan_steps]))
                 training_log.record_sample_time(time.time() - sample_start, step_metrics)
@@ -386,7 +524,7 @@ def main(_):
             sink.record_transition(i, transition)
             transitions_since_update += 1
 
-        can_update = training_log.ep_count >= 10 and i >= FLAGS.batch_size
+        can_update = training_log.ep_count >= FLAGS.update_start_episodes and i >= FLAGS.batch_size
         if FLAGS.update_type == "step" and can_update:
             if FLAGS.num_updates > 0:
                 run_agent_updates(FLAGS.num_updates, step_metrics)
@@ -415,6 +553,11 @@ def main(_):
                     episodes_since_update = 0
 
             training_log.on_episode_done(episode_log, success, step_metrics)
+            logging.info("Episode %d done (success=%s, updates so far %d). %s",
+                         training_log.ep_count, success, updates_run, _gpu_mem())
+            if FLAGS.log_live_arrays:
+                logging.info("Episode %d %s", training_log.ep_count, _live_summary(top=8))
+                logging.info("Episode %d holders: %s", training_log.ep_count, _batch_holders())
             episode_log.reset()
             with buffer_lock:
                 batch_processor.on_episode_start()
