@@ -48,7 +48,7 @@ class DK1ReplayEnv:
             }
 
     def _summarize(self):
-        if self._ep is None or not self._acts:
+        if self._ep is None or len(self._acts) < 2:  # nothing to summarize (or a stray step after done)
             return
         a = np.asarray(self._acts)
         n = len(a)
@@ -79,6 +79,8 @@ class DK1ReplayEnv:
         return self.get_observation()
 
     def get_observation(self):
+        if self._ep is None:  # observed before the first reset (server warm-up)
+            self.reset()
         t = min(self.t, len(self._ep["state"]) - 1)
         obs = {k: self._ep[k][t] for k in ("head_image", "left_wrist_image", "right_wrist_image", "state")}
         obs["prompt"] = self.prompt

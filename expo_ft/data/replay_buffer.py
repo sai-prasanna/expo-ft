@@ -539,11 +539,18 @@ class PiReplayBuffer(Dataset):
                 _cross |= np.asarray(self.dataset_dict["dones"][_idx]) > 0.5
             jax_dataset_dict["valids"] = jax_dataset_dict["valids"] * (1.0 - _cross.astype(np.float32))
 
+        # At delay 0 the next_delayed_* entries are the same host arrays as next_*: upload once.
+        _uploaded = {}
+
         def to_jax_array(x):
             """Recursively convert numpy arrays to JAX arrays, handling nested dicts."""
             if isinstance(x, dict):
                 return {k: to_jax_array(v) for k, v in x.items()}
-            elif isinstance(x, (np.ndarray, np.generic)):
+            elif isinstance(x, np.ndarray):
+                if id(x) not in _uploaded:
+                    _uploaded[id(x)] = jnp.asarray(x)
+                return _uploaded[id(x)]
+            elif isinstance(x, np.generic):
                 return jnp.asarray(x)
             else:
                 try:
@@ -561,6 +568,9 @@ class PiReplayBuffer(Dataset):
         openpi_batch = batch.copy()
         cams = self._gather_camera_keys
         prefixes = ["", "next_", "next_delayed_"]
+        # float32 images are 4x the uint8 ones; convert an array shared between prefixes
+        # (next_ / next_delayed_ at delay 0) only once.
+        converted = {}
 
         for prefix in prefixes:
             img_key = f"{prefix}image"
@@ -570,7 +580,10 @@ class PiReplayBuffer(Dataset):
                 st = _critic_key_to_storage(cam)
                 img = openpi_batch.pop(f"{prefix}{st}")
                 if img.dtype == np.uint8:
-                    img = img.astype(np.float32) / 255.0 * 2.0 - 1.0
+                    key = id(img)
+                    if key not in converted:
+                        converted[key] = (img, img.astype(np.float32) / 255.0 * 2.0 - 1.0)
+                    img = converted[key][1]
                 openpi_batch[img_key][cam] = img
                 openpi_batch[f"{img_key}_mask"][cam] = openpi_batch.pop(f"{prefix}{st}_mask")
         return openpi_batch
