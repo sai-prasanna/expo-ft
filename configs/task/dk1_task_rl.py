@@ -4,7 +4,8 @@
 
 - No leader arms / clutch: interventions are off. The operator still resets the scene (Enter)
   and labels each episode (1 = success, 2 = failure).
-- Joint cap 0.2 rad/step (as dk1_task_safe.py).
+- Joint cap 0.2 rad/step vs the measured joints (as dk1_task_safe.py), and 0.1 rad/step between
+  consecutive commands (demo p99.9 = 0.104 rad) against lurches at chunk switches.
 - Cartesian safety (EE box per arm + 8 cm arm-to-arm distance) from dk1_hardware.json, recorded
   with `python -m client.dk1_record_safety`. If no box is recorded yet, a demo-derived one is used:
   the tool0 range over all 20 stack_green_blue demos plus 5 cm in x/y and on top, floor at
@@ -18,6 +19,9 @@ def get_config():
     config = dk1_task.get_config()
     config.max_joint_delta_per_step = 0.2
     config.intervention.enabled = False
+    # Consecutive commands (arm joints) may differ by at most 0.1 rad: demo p99.9 is 0.104, so
+    # demo-like motion is untouched; chunk switches by the untrained critic ramp instead of lurching.
+    config.max_command_delta_per_step = 0.1
     if config.ee_bounds is None:
         config.ee_bounds = {
             "left": [[0.16, 0.52], [-0.37, 0.21], [0.005, 0.35]],

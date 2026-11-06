@@ -18,6 +18,6 @@ def get_config():
 
     config.control_hz = 15
     # Demos: 206-351 steps (mean 253) at 15 Hz; the policy runs slower than the operator.
-    config.auto_reset_steps = 450
+    config.auto_reset_steps = 600  # 40 s; was 450 (30 s), policy rollouts often still running at the cutoff
 
     return config

@@ -16,6 +16,7 @@ DATA_ROOT="${DATA_ROOT:-/weka/martius/mot244/data/expo-ft}"
 DATA_ID="${DATA_ID:-dk1_task_20}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 NUM_STEPS="${NUM_STEPS:-4001}"
+SAVE_INTERVAL="${SAVE_INTERVAL:-2000}"  # 1000 to compare earlier checkpoints on the robot
 
 export HF_LEROBOT_HOME="$DATA_ROOT/lerobot"
 export OPENPI_DATA_HOME="$DATA_ROOT/openpi"
@@ -40,5 +41,5 @@ python expo_ft/agents/vla/openpi/scripts/train.py expo_pi05_dk1_lora_finetune_sf
     --batch-size="$BATCH_SIZE" \
     --num-workers=8 \
     --num_train_steps="$NUM_STEPS" \
-    --save_interval=2000 \
+    --save_interval="$SAVE_INTERVAL" \
     --fsdp_devices=1

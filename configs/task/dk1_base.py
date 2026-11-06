@@ -68,7 +68,7 @@ def get_config():
     # "reset_joints" list to dk1_hardware.json.
     reset = hw.get("reset_joints", DK1_FOLDED_POSE)
     config.reset_joints = np.asarray(reset, dtype=np.float64)
-    config.reset_max_joint_speed = 0.3  # rad/s while homing (~17 deg/s for the joint with the farthest to go)
+    config.reset_max_joint_speed = 0.5  # rad/s while homing (~29 deg/s for the joint with the farthest to go); was 0.3
     config.wait_for_scene_reset = True  # press Enter after the manual scene reset
 
     # ---- observation / control ----------------------------------------------------------
@@ -83,6 +83,8 @@ def get_config():
     # (~14 deg) felt right in teleop with smoothing on; 0.1-0.2 felt held back. Lower it if policy
     # rollouts are too fast.
     config.max_joint_delta_per_step = 0.25
+    # Optional per-step limit between consecutive commands (arm joints, rad); None = off.
+    config.max_command_delta_per_step = None
     # Cartesian safety (client/envs/dk1_safety.py), recorded on the robot with
     # `python -m client.dk1_record_safety` into dk1_hardware.json. Off until recorded.
     # EE box per arm in that arm's base frame (m), [[xmin,xmax],[ymin,ymax],[zmin,zmax]].

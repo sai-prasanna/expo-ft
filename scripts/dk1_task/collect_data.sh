@@ -2,15 +2,16 @@
 # Teleoperated demos with the leader arms (client_dk1 venv). Move an arm to start, come back home and hold still to stop,
 # then squeeze BOTH triggers = keep, LEFT alone = discard (1/2+Enter also work).
 # Reruns with the same SAVE_ROOT add episodes. One folder per task, e.g.
-#   SAVE_ROOT=data/dk1_pick PROMPT="pick up the cube" bash scripts/dk1_task/collect_data.sh
+#   SAVE_ROOT=data/dk1_pick TASK_CONFIG=configs/task/dk1_pick.py NUM_EPISODES=40 bash scripts/dk1_task/collect_data.sh
 source client_dk1/.venv/bin/activate
 
 NUM_EPISODES="${NUM_EPISODES:-20}"
 SAVE_ROOT="${SAVE_ROOT:-data/dk1_task}"
 PROMPT="${PROMPT:-}"  # empty = language_instruction from the task config
+TASK_CONFIG="${TASK_CONFIG:-configs/task/dk1_task.py}"
 
 python -m client.collect_data_dk1 \
     --save_root "$SAVE_ROOT" \
     --num_episodes "$NUM_EPISODES" \
     --prompt "$PROMPT" \
-    --task_config configs/task/dk1_task.py
+    --task_config "$TASK_CONFIG"

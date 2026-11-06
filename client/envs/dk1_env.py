@@ -321,6 +321,7 @@ class DK1Env:
         auto_reset_steps: int = 300,
         ignore_auto_reset: bool = False,
         max_joint_delta_per_step: float | None = 0.1,
+        max_command_delta_per_step: float | None = None,
         ee_bounds=None,
         right_base_in_left=None,
         min_arm_distance=None,
@@ -343,6 +344,8 @@ class DK1Env:
         self.auto_reset_steps = int(auto_reset_steps)
         self.ignore_auto_reset = bool(ignore_auto_reset)
         self.max_joint_delta_per_step = max_joint_delta_per_step
+        self.max_command_delta_per_step = max_command_delta_per_step
+        self._rate_count = 0
         self.safety = DK1Safety(ee_bounds, right_base_in_left, min_arm_distance)
         if self.safety.active:
             print(f"[DK1Env] Cartesian safety: EE box {'on' if self.safety.ee_bounds is not None else 'off'}, "
@@ -426,6 +429,14 @@ class DK1Env:
         before = a.copy()
         a = clip_joint_delta(a, current, self.max_joint_delta_per_step if max_delta is None else max_delta)
         self._clip_count += int(not np.allclose(a, before))
+        # Rate limit vs the previous COMMAND (arm joints): a new chunk that disagrees with the last one
+        # ramps over several steps instead of lurching. The cap above is vs the measured joints.
+        if self.max_command_delta_per_step is not None and self._last_command is not None:
+            arm = np.r_[0:6, 7:13]
+            prev = self._last_command[arm]
+            lim = np.clip(a[arm], prev - self.max_command_delta_per_step, prev + self.max_command_delta_per_step)
+            self._rate_count += int(not np.allclose(lim, a[arm]))
+            a[arm] = lim
         return self.safety.apply(a, current)
 
     def step(self, action, max_delta: float | None = None) -> dict:
@@ -470,6 +481,9 @@ class DK1Env:
         if self._steps_since_reset > 0:
             print(f"[DK1Env] per-step joint cap hit on {self._clip_count}/{self._steps_since_reset} steps "
                   f"({100.0 * self._clip_count / self._steps_since_reset:.0f}%) last episode")
+        if self._steps_since_reset > 0 and self.max_command_delta_per_step is not None:
+            print(f"[DK1Env] command rate limit hit on {self._rate_count}/{self._steps_since_reset} steps last episode")
+        self._rate_count = 0
         if self._steps_since_reset > 0 and self.safety.active:
             print(f"[DK1Env] Cartesian safety held the arms on: {self.safety.summary_and_reset()} steps last episode")
         self._clip_count = 0
