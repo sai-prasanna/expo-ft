@@ -172,6 +172,21 @@ def _sample_actions(rng, apply_fn, params, observations: jnp.ndarray, states, ac
     return dist.sample(seed=key), rng
 
 
+
+def _images_to_float(batch):
+    """uint8 image leaves -> float32 in [-1, 1], as the replay buffer's openpi conversion does.
+
+    Batches may keep uint8 images while queued on the GPU (BatchProcessor keep_uint8_images);
+    no-op for batches that are already float.
+    """
+    for key in ("image", "next_image", "next_delayed_image"):
+        if isinstance(batch.get(key), dict):
+            batch[key] = {
+                cam: (img.astype(jnp.float32) / 255.0 * 2.0 - 1.0) if img.dtype == jnp.uint8 else img
+                for cam, img in batch[key].items()
+            }
+    return batch
+
 class EXPOLearner(AgentLearner, struct.PyTreeNode):
     rng: jax.random.PRNGKey
     data_augmentation_fn: Callable = struct.field(pytree_node=False)
@@ -877,7 +892,9 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
 
     @partial(jax.jit, static_argnames="utd_ratio")
     def _update_jit(self, agent, batch: DatasetDict, utd_ratio: int, actor_batch: DatasetDict = None):
-        batch = batch.copy()
+        batch = _images_to_float(batch.copy())
+        if actor_batch is not None:
+            actor_batch = _images_to_float(actor_batch.copy())
         rng, key1 = jax.random.split(agent.rng)
         rng, key2 = jax.random.split(rng)
         batch["image"] = self.data_augmentation_fn(key1, batch["image"])
