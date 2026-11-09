@@ -10,14 +10,19 @@ source .venv/bin/activate
 CLIENT_IP=0.0.0.0
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-DATA_ID="dk1_task_20"
-SFT_CKPT="./checkpoints/expo_pi05_dk1_lora_finetune_sft/${DATA_ID}_lora_sft/4000/params"
+# Another task, e.g. pick-into-bowl:
+#   DATA_ID=dk1_pnp_blue_bowl_20 TASK_CONFIG=configs/task/dk1_pick.py DATASET_PATH=./data/dk1_pnp_blue_bowl/success \
+#   SFT_CKPT=./checkpoints/expo_pi05_dk1_lora_finetune_sft/dk1_pnp_blue_bowl_20_lora_sft/2000/params bash scripts/dk1_task/eval_policy.sh
+DATA_ID="${DATA_ID:-dk1_task_20}"
+SFT_CKPT="${SFT_CKPT:-./checkpoints/expo_pi05_dk1_lora_finetune_sft/${DATA_ID}_lora_sft/4000/params}"
+TASK_CONFIG="${TASK_CONFIG:-configs/task/dk1_task.py}"
+DATASET_PATH="${DATASET_PATH:-./data/stack_green_blue/success}"
 NUM_EPISODES="${NUM_EPISODES:-20}"
 
 python eval_droid_policy.py \
-    --config_task=configs/task/dk1_task.py \
+    --config_task="$TASK_CONFIG" \
     --config=configs/model/expo_ft_pi_config.py \
-    --dataset_path=./data/stack_green_blue/success \
+    --dataset_path="$DATASET_PATH" \
     --num_data=1 \
     --client_host="$CLIENT_IP" \
     --client_port=8102 \
