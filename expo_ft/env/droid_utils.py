@@ -67,6 +67,16 @@ def process_droid_dataset(
                 a2 = np.asarray(f["action"][gripper_key])
                 ep_actions = np.concatenate([a1, a2[:, None] if len(a2.shape) == 1 else a2], axis=-1)
             
+            if task_config.get("ee_control"):
+                # DK1 EE action space (client/envs/dk1_ee.py): same conversion as the LeRobot export.
+                from client.envs.dk1_ee import DK1EEConverter
+
+                conv = DK1EEConverter()
+                joints = np.asarray(ep_obs["state"], dtype=np.float64)
+                ep_actions = np.stack([conv.action(ep_actions[t], joints[t]) for t in range(len(ep_actions))])
+                ep_obs["state"] = np.stack([conv.state(q) for q in joints])
+                ep_obs["joint_state"] = joints.astype(np.float32)
+
             T = len(ep_actions)
             ep_dones = np.pad(np.array([1.0], dtype=np.float32), (T-1, 0), constant_values=0)
             ep_rewards = np.pad(np.array([1.0], dtype=np.float32), (T-1, 0), constant_values=0)
