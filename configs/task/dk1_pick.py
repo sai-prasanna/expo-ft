@@ -15,7 +15,9 @@ from configs.task import dk1_base
 def get_config():
     config = dk1_base.get_config()
     config.env_name = "dk1_pick"
-    config.language_instruction = "Put the blue cube into the bowl"  # data/dk1_pnp_blue_bowl
+    # Prompt stored in data/dk1_pnp_bowl_new (training uses the stored prompt; eval sends this one).
+    # data/dk1_pnp_blue_bowl used "Put the blue cube into the bowl".
+    config.language_instruction = "Pick the blue cube and put it in the bowl"
     config.control_hz = 15
     config.auto_reset_steps = 300  # 20 s; expect demos of ~8-12 s
     return config

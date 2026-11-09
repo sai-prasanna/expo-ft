@@ -7,7 +7,9 @@ Feature names equal the env observation keys (client/envs/dk1_env.py), which the
     head_image, left_wrist_image, right_wrist_image : image (H, W, 3), H, W = task_config.image_size
     state   : float32 (14,)
     actions : float32 (14,)   = action/<task_config.action_space> (the executed 14-D action)
-fps = task_config.control_hz. The task (prompt) of each episode is the prompt stored in its
+fps = task_config.control_hz.
+With task_config.ee_control (configs/task/dk1_pick_ee.py), state/actions are converted to the
+DROID-style EE space of client/envs/dk1_ee.py instead: state (20,), actions (14,). The task (prompt) of each episode is the prompt stored in its
 traj.hdf5 (collect_data_dk1.py --prompt), falling back to task_config.language_instruction.
 
     uv run scripts/convert_dk1_data_to_lerobot.py --data_dir data/dk1_task/success \
@@ -68,6 +70,13 @@ def main(
         raise ValueError("DK1 conversion expects gripper_action_space=None (gripper inside action14).")
     hw = tuple(cfg.image_size)
     action_dim = 14
+    state_dim = 14
+    ee = None
+    if cfg.get("ee_control"):
+        from client.envs.dk1_ee import EE_STATE_DIM, DK1EEConverter
+
+        ee, state_dim = DK1EEConverter(), EE_STATE_DIM
+        print("EE control: DROID-style per-arm cartesian velocity actions, 20-D EE state")
 
     dataset = LeRobotDataset.create(
         repo_id=repo_name,
@@ -75,7 +84,7 @@ def main(
         fps=int(cfg.control_hz),
         features={
             **{k: {"dtype": "image", "shape": (*hw, 3), "names": ["height", "width", "channel"]} for k in IMAGE_KEYS},
-            STATE_KEY: {"dtype": "float32", "shape": (14,), "names": ["state"]},
+            STATE_KEY: {"dtype": "float32", "shape": (state_dim,), "names": ["state"]},
             "actions": {"dtype": "float32", "shape": (action_dim,), "names": ["actions"]},
         },
         image_writer_threads=10,
@@ -104,6 +113,10 @@ def main(
         prompt_counts[prompt] = prompt_counts.get(prompt, 0) + 1
         if actions.ndim != 2 or actions.shape[1] != action_dim:
             raise ValueError(f"{path}: action/{action_key} has shape {actions.shape}, expected (T, 14)")
+        if ee is not None:
+            joints = obs[STATE_KEY]
+            actions = np.stack([ee.action(actions[t], joints[t]) for t in range(len(actions))])
+            obs[STATE_KEY] = np.stack([ee.state(q) for q in joints])
         for t in range(len(actions)):
             frame = {k: _resize(np.asarray(obs[k][t], dtype=np.uint8), hw) for k in IMAGE_KEYS}
             frame[STATE_KEY] = np.asarray(obs[STATE_KEY][t], dtype=np.float32)
