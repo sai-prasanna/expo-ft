@@ -108,6 +108,18 @@ def get_config():
     # ---- interventions: anchored relative IK from the leader arms ------------------------
     config.intervention = ml_collections.ConfigDict({
         "enabled": True,
+        # "gello": hold the foot pedal + move the GELLO leaders. "spacemouse": two SpaceMice, one per
+        # arm, auto-engage on puck motion, hold button 0 = close gripper (client/teleop/spacemouse.py).
+        "device": "gello",
+        "spacemouse": ml_collections.ConfigDict({
+            "left_phys": "usb-0000:00:14.0-3",  # USB port; `python -m client.teleop.spacemouse --list`
+            "right_phys": "usb-0000:00:14.0-9.2",
+            "operator_yaw_deg": 0.0,  # 0 = operator faces the same way as the arms (+x forward)
+            "max_lin_vel": 0.08,  # m/s at full deflection
+            "max_rot_vel": 0.5,  # rad/s at full deflection
+            "idle_release_s": 0.75,
+            "rotation_mode": "button1",  # hold button 1 = rotate only (pushes also tilt the puck) | "always"
+        }),
         # foot pedal = a spare mouse (client/teleop/pedal.py); substring of its evdev device name
         "pedal_name": "2.4GHz Transceiver v9.0 Mouse",
         "rate_hz": 60.0,

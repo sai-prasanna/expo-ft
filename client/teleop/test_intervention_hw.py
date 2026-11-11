@@ -15,6 +15,10 @@ Live print (2 Hz while engaged), per arm: |leader EE delta - follower EE delta| 
     python -m client.teleop.test_intervention_hw --list                         # pick D/T
     python -m client.teleop.test_intervention_hw --demo 11 --frame 120          # real robot
     python -m client.teleop.test_intervention_hw --mock --demo 11 --frame 120   # no hardware
+
+SpaceMice instead of pedal + GELLO (auto-engage on puck motion, hold button 0 = close gripper,
+hold button 1 = rotate; client/teleop/spacemouse.py). Slow by default here (--sm_lin_vel 0.03 m/s):
+    python -m client.teleop.test_intervention_hw --device spacemouse --demo 11 --frame 120
 """
 
 from __future__ import annotations
@@ -64,6 +68,96 @@ def play(env, cmds, hz):
             time.sleep(max(0.0, 1.0 / hz - (time.perf_counter() - t0)))
 
 
+def run_spacemouse(args, cfg, hz):
+    """Same flow as the GELLO test (home -> demo pose -> hold -> take over -> retrace back), with the SpaceMice."""
+    from client.envs.dk1_env import clip_to_limits
+    from client.teleop.mink_ik import DK1Kinematics
+
+    kin = DK1Kinematics()
+    state, _ = load_demo(args.data, args.demo)
+    T = int(np.clip(args.frame, 0, len(state) - 1))
+    path = np.array([clip_to_limits(s) for s in state[: T + 1]])
+    env_kwargs = dict(cfg)
+    env_kwargs.update(env_usage="eval", wait_for_scene_reset=False, max_joint_delta_per_step=args.max_delta)
+    env = cfg.env(**env_kwargs)  # real: followers, cameras, SpaceMice (no GELLO)
+    log = {k: [] for k in ("t", "engaged", "follower", "command", "executed")}
+    cap_hits = cap_steps = 0
+    try:
+        print(f"\nDemo {args.demo}, frame {T}/{len(state)-1}. SpaceMice: {args.sm_lin_vel} m/s, "
+              f"{args.sm_rot_vel} rad/s at full deflection; joint cap {args.max_delta} rad/step.")
+        if not args.mock:
+            input("Hand on the e-stop. Press Enter to move home.")
+        env.reset()
+        if not args.mock:
+            input("Scene set up as at that demo frame? Press Enter to retrace the demo path.")
+        play(env, densify(np.vstack([env.get_state(), path]), args.path_speed, 50.0), 50.0)
+        time.sleep(0.5)
+        print("At demo pose. Follower holds. Nudge a puck to take over (the follower must NOT jump), "
+              "push gently, let go to hand back. Button 0 held = close, button 1 held = rotate. Ctrl+C to finish.")
+        thread = env._ensure_intervention()
+        gate = env.get_pedal()
+        anchor, last_print, t_start = None, 0.0, time.perf_counter()
+        while True:
+            t0 = time.perf_counter()
+            tt = t0 - t_start
+            if args.mock:  # scripted: engage at 1 s, push left puck forward 1-3 s, release at 4 s, stop at 5 s
+                for sd in SIDES:
+                    gate._t_event[sd] = time.monotonic()
+                gate._raw["left"][:] = [0, 200, 0, 0, 0, 0] if 1.0 < tt < 3.0 else 0
+                if tt > 1.0 and not gate.engaged and tt < 3.0:
+                    gate.set_engaged(True)
+                if tt > 4.0:
+                    gate.set_engaged(False)
+                if tt > 5.0:
+                    break
+            action, is_human = env.get_human_action()
+            fol = env.get_state()
+            if is_human and anchor is None:
+                anchor = fol.copy()
+                print("[test] engaged: the follower should NOT have moved.", flush=True)
+            if not is_human and anchor is not None:
+                print("[test] released: follower holds.", flush=True)
+                anchor = None
+            cmd = action if is_human else -np.ones(14)
+            before = env._clip_count
+            executed = env.step(cmd)["executed_action"]
+            if is_human:
+                cap_steps += 1
+                cap_hits += env._clip_count - before
+            for k, v in zip(log, (tt, is_human, fol, cmd, executed)):
+                log[k].append(v)
+            if is_human and anchor is not None and t0 - last_print > 0.5:
+                last_print = t0
+                parts = []
+                for side, sl in SIDES.items():
+                    d = kin.fk(fol[sl][:6])[0] - kin.fk(anchor[sl][:6])[0]
+                    lead = np.linalg.norm(thread.controller.targets[side][0] - kin.fk(fol[sl][:6])[0])
+                    parts.append(f"{side[0].upper()}: moved {np.round(d*100,1)} cm, target lead {lead*100:3.1f} cm, "
+                                 f"grip {fol[sl][6]:.2f}")
+                print(" | ".join(parts) + f" | cap {100*cap_hits/max(cap_steps,1):.0f}% | ik {thread.loop_ms:.1f} ms",
+                      flush=True)
+            time.sleep(max(0.0, 1.0 / hz - (time.perf_counter() - t0)))
+    except KeyboardInterrupt:
+        print("\nStopping.")
+    finally:
+        try:
+            env._release_intervention()
+            print(f"Joint cap hit on {cap_hits}/{cap_steps} human steps.")
+            if not args.mock:
+                input("Retrace back: the arm returns along the demo path, then home. Clear the workspace, press Enter.")
+            back = np.vstack([env.get_state(), path[::-1]])
+            back[1:, 6] = back[1:, 13] = 0.0
+            play(env, densify(back, args.path_speed, 50.0), 50.0)
+            env.home()
+        finally:
+            out = args.log or f"outputs/intervention_test_sm_demo{args.demo}_f{T}_{time.strftime('%Y%m%d_%H%M%S')}.npz"
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            np.savez(out, **{k: np.asarray(v) for k, v in log.items()})
+            print(f"log: {out}")
+            env.close()
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--task_config", default="configs/task/dk1_task.py")
@@ -76,6 +170,9 @@ def main():
                    help="per-step joint cap (rad/step at control_hz) for human actions in this test")
     p.add_argument("--mock", action="store_true", help="fake arms/leaders/cams, scripted pedal + leader motion")
     p.add_argument("--log", default="")
+    p.add_argument("--device", choices=("gello", "spacemouse"), default="gello")
+    p.add_argument("--sm_lin_vel", type=float, default=0.03, help="spacemouse: m/s at full deflection")
+    p.add_argument("--sm_rot_vel", type=float, default=0.3, help="spacemouse: rad/s at full deflection")
     args = p.parse_args()
 
     if args.list:
@@ -87,6 +184,11 @@ def main():
 
     cfg = load_task_config("configs/task/dk1_mock.py" if args.mock else args.task_config)
     hz = float(cfg.control_hz)
+    if args.device == "spacemouse":
+        cfg.intervention.device = "spacemouse"
+        cfg.intervention.spacemouse.max_lin_vel = args.sm_lin_vel
+        cfg.intervention.spacemouse.max_rot_vel = args.sm_rot_vel
+        return run_spacemouse(args, cfg, hz)
     from client.teleop.mink_ik import DK1Kinematics
     kin = DK1Kinematics()
     state, leader_rec = load_demo(args.data, args.demo)

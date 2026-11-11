@@ -1,0 +1,10 @@
+# DK1 SpaceMice (3Dconnexion, vendor 256f; e.g. SpaceMouse Compact 256f:c635) as an intervention
+# device (client/teleop/spacemouse.py).
+#  - uaccess: the logged-in user can read /dev/input/eventN and /dev/hidrawN without the `input` group.
+#  - LIBINPUT_IGNORE_DEVICE: the desktop never treats the puck as a pointer/scroll device.
+# Install:
+#   sudo cp scripts/dk1_task/71-dk1-spacemouse.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input --subsystem-match=hidraw
+#   (unplug/replug the SpaceMice if the permissions don't change)
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="256f", ENV{LIBINPUT_IGNORE_DEVICE}="1", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="256f", TAG+="uaccess"

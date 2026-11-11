@@ -605,10 +605,19 @@ class DK1Env:
                 self._leaders = _RealLeaders(**self._leader_kwargs)
         return self._leaders
 
+    @property
+    def _intervention_device(self) -> str:
+        return str(self.intervention_cfg.get("device", "gello"))
+
     def get_pedal(self):
+        """The engage gate: the foot pedal (device "gello") or the SpaceMice themselves (auto-engage)."""
         if self._pedal is None:
-            from client.teleop.pedal import DEFAULT_PEDAL_NAME, Pedal
-            self._pedal = Pedal(None if self.mock else self.intervention_cfg.get("pedal_name", DEFAULT_PEDAL_NAME))
+            if self._intervention_device == "spacemouse":
+                from client.teleop.spacemouse import SpaceMice
+                self._pedal = SpaceMice(self.intervention_cfg.get("spacemouse"), mock=self.mock)
+            else:
+                from client.teleop.pedal import DEFAULT_PEDAL_NAME, Pedal
+                self._pedal = Pedal(None if self.mock else self.intervention_cfg.get("pedal_name", DEFAULT_PEDAL_NAME))
         return self._pedal
 
     def _ensure_intervention(self):
@@ -619,6 +628,13 @@ class DK1Env:
                        "limit_margin", "limit_gain", "posture_cost", "max_joint_delta", "solver")
             ik_kwargs = {k: cfg[k] for k in ik_keys if k in cfg}
             rate = float(cfg.get("rate_hz", 60.0))
+            if self._intervention_device == "spacemouse":
+                from client.teleop.spacemouse import SpaceMouseIKController
+                gate = self.get_pedal()
+                controller = SpaceMouseIKController(home14=self.reset_joints, cfg=cfg.get("spacemouse"),
+                                                    dt=1.0 / rate, **ik_kwargs)
+                self._intervention = InterventionThread(controller, gate, gate.read, self._arms.get, rate_hz=rate)
+                return self._intervention
             controller = RelativeIKController(
                 home14=self.reset_joints,
                 position_scale=cfg.get("position_scale", 1.0),
