@@ -211,9 +211,13 @@ def main(_):
             # No expo checkpoint: the evaluated weights are the loader path itself, so
             # results belong under that run's <run_dir>/evals/<weight_step>. Loader path
             # is <run_dir>/checkpoints/<step>/params.
-            params_dir = os.path.dirname(weight_loader_path)
+            # Loader path is <run_dir>/<step>/params (openpi) or <run_dir>/checkpoints/<step>/params.
+            # Keyed by run_dir, so models that share a step number (all 4000) don't share a folder.
+            params_dir = os.path.dirname(weight_loader_path.rstrip("/"))
             weight_step = os.path.basename(params_dir)
-            run_dir = os.path.dirname(os.path.dirname(params_dir))
+            run_dir = os.path.dirname(params_dir)
+            if os.path.basename(run_dir) == "checkpoints":
+                run_dir = os.path.dirname(run_dir)
             eval_root = os.path.join(run_dir, "evals", weight_step)
         else:
             eval_root = "./eval_droid_policy/evals"
