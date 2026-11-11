@@ -120,6 +120,16 @@ def get_config():
             "idle_release_s": 0.75,
             "rotation_mode": "button1",  # hold button 1 = rotate only (pushes also tilt the puck) | "always"
         }),
+        # Episode outcome without the keyboard (device "gello", pedal UP): open both leader grippers,
+        # then squeeze + hold one: success_side = SUCCESS, the other = FAILURE. Also answers the
+        # step-limit prompt. Keyboard 1/2 + Enter still works.
+        "leader_outcome": ml_collections.ConfigDict({
+            "enabled": True,
+            "success_side": "left",
+            "close_thresh": 0.7,  # leader gripper 0 open .. 1 closed
+            "open_thresh": 0.3,
+            "hold_s": 0.5,
+        }),
         # foot pedal = a spare mouse (client/teleop/pedal.py); substring of its evdev device name
         "pedal_name": "2.4GHz Transceiver v9.0 Mouse",
         "rate_hz": 60.0,

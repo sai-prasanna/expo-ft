@@ -11,6 +11,8 @@ reaches the desktop. Unplugging it / read errors release to the policy; it recon
 comes back. Needs read access to the devices: scripts/dk1_task/70-dk1-footpedal.rules.
 
 `Pedal(None)` reads no device; press/release from code via `set_engaged()` (mock tests).
+`Pedal(name, clicker=True)`: a plain start/stop button (data collection): only `clicks()` matters,
+no takeover / human-control messages.
 """
 
 from __future__ import annotations
@@ -57,7 +59,8 @@ def find_pedal(name: str) -> list:
 
 
 class Pedal:
-    def __init__(self, name: str | None = DEFAULT_PEDAL_NAME):
+    def __init__(self, name: str | None = DEFAULT_PEDAL_NAME, clicker: bool = False):
+        self.clicker = bool(clicker)
         self._engaged = False
         self._epoch = 0  # incremented on every press; lets the controller detect re-anchors
         self._clicks = 0  # incremented on every release (from the device only)
@@ -72,8 +75,11 @@ class Pedal:
         self._thread = threading.Thread(target=self._loop, daemon=True, name="foot-pedal")
         self._thread.start()
         extra = f" (+{len(self._devs) - 1} sibling interfaces)" if len(self._devs) > 1 else ""
-        print(f"[pedal] {self._devs[0].name} ({self._devs[0].path}){extra}: HOLD to take over, "
-              f"release to hand back; click = Enter at the scene-reset prompt.")
+        if self.clicker:
+            print(f"[pedal] {self._devs[0].name} ({self._devs[0].path}){extra}: click = start / stop recording.")
+        else:
+            print(f"[pedal] {self._devs[0].name} ({self._devs[0].path}){extra}: HOLD to take over, "
+                  f"release to hand back; click = Enter at the scene-reset prompt.")
 
     def _close_devs(self, ungrab: bool):
         for d in self._devs:
@@ -125,7 +131,8 @@ class Pedal:
                             self.set_engaged(bool(held))
             except OSError as e:  # unplugged / receiver lost
                 if not self._stop.is_set():
-                    print(f"\n[pedal] !!! foot pedal lost ({e!r}); policy control !!!\n", flush=True)
+                    print(f"\n[pedal] !!! foot pedal lost ({e!r})"
+                          f"{'' if self.clicker else '; policy control'} !!!\n", flush=True)
                 self.set_engaged(False)
                 self._close_devs(ungrab=False)
         self._close_devs(ungrab=True)
@@ -137,7 +144,7 @@ class Pedal:
     def _set(self, value: bool):
         if value and not self._engaged:
             self._epoch += 1
-        if value != self._engaged:
+        if value != self._engaged and not self.clicker:
             print(f"[pedal] {'ENGAGED: human control' if value else 'released: policy control'}", flush=True)
         self._engaged = value
 

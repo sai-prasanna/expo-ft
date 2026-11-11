@@ -16,7 +16,13 @@ kept under <save_root>/success/<id>/, streaming MP4 previews), but:
 Episode flow: home -> manual scene reset (Enter) -> follower slowly syncs to the leaders ->
 move the leaders to start recording -> type 1/2 + Enter to end.
 
-With --gesture_control (default) only the first episode homes. After that, teleop runs
+With --pedal_control (default) only the first episode homes. After that, teleop runs
+continuously: CLICK the foot pedal = start recording, CLICK again = stop; then open both leader
+grippers and squeeze + hold the LEFT one = keep, the RIGHT one = discard (the follower grippers hold
+still while you decide; a click instead resumes recording) -> idle (reset the scene, take your time)
+-> click to start the next one. The arms never have to go home.
+
+With --nopedal_control --gesture_control only the first episode homes. After that, teleop runs
 continuously: come back home (reset_joints, shoulder/elbow joints) and hold still -> recording
 stops; squeeze BOTH leader triggers = keep, LEFT alone = discard -> idle (reset the scene, take
 your time) -> clearly move an arm -> the next episode starts (with 0.5 s of pre-roll at rest).
@@ -41,6 +47,7 @@ import numpy as np
 from absl import app, flags
 from ml_collections import config_flags
 
+from client.envs.dk1_env import LeaderGripperOutcome
 from client.teleop.episode_gestures import EpisodeGestureFSM, GestureParams
 
 FLAGS = flags.FLAGS
@@ -60,6 +67,10 @@ flags.DEFINE_bool("ee_box", False, "Apply the per-arm EE safety box (hardware ee
                   "default: a hold freezes the follower mid-air while the leader moves on. The joint limits "
                   "stay on.")
 flags.DEFINE_integer("mock_episode_steps", 30, "mock=True only: steps per scripted episode (auto success).")
+flags.DEFINE_bool("pedal_control", True,
+                  "Foot-pedal episodes: click = start recording, click = stop, then open both leader grippers "
+                  "and squeeze + hold LEFT = keep / RIGHT = discard (task config intervention.leader_outcome). "
+                  "No homing between episodes. 1/2 + Enter still work. Overrides --gesture_control.")
 flags.DEFINE_bool("gesture_control", True,
                   "Hands-free episodes (client/teleop/episode_gestures.py): recording starts when the "
                   "leaders clearly move and stops when they come back home (reset_joints) and hold "
@@ -224,12 +235,43 @@ def _gesture_status(fsm, rec_s: float) -> str:
             f"{home} | {speed} | still {fsm._count / fsm.hz:.1f}/{p.hold_s:.1f}s")
 
 
+_PEDAL_HELP = ("CLICK again to stop; then open both leader grippers and squeeze + hold LEFT = keep, "
+               "RIGHT = discard. (1/2 + Enter still work.)")
+
+
+def _leader_outcome_kwargs(task_config) -> dict:
+    iv = task_config.get("intervention", None) or {}
+    kw = dict(iv.get("leader_outcome", None) or {})
+    kw.pop("enabled", None)
+    return kw
+
+
+def _open_pedal(env, task_config):
+    """The foot pedal as the episode start/stop clicker (env._pedal too, so a click also answers the
+    "reset the scene" prompt). The env's own leader-gripper outcome is turned off here: while
+    collecting, the leader grippers are for grasping."""
+    from client.teleop.pedal import DEFAULT_PEDAL_NAME, Pedal
+
+    iv = task_config.get("intervention", None) or {}
+    pedal = Pedal(iv.get("pedal_name", DEFAULT_PEDAL_NAME), clicker=True)
+    if getattr(env, "_pedal", None) is None:
+        env._pedal = pedal
+    env._leader_outcome = None
+    return pedal
+
+
 def collect_trajectory(env, controller, save_filepath=None, recording_folderpath=None, test_detector=False):
     task_config = FLAGS.task_config
 
-    gesture = FLAGS.gesture_control and not controller.mock and not test_detector
+    pedal_mode = FLAGS.pedal_control and not controller.mock and not test_detector
+    gesture = FLAGS.gesture_control and not pedal_mode and not controller.mock and not test_detector
     fsm = getattr(controller, "gesture_fsm", None)
-    if not gesture or fsm is None:
+    pedal = getattr(controller, "pedal", None)
+    if pedal_mode and pedal is None:
+        # Before env.reset(): a pedal click then also answers the first "reset the scene" prompt.
+        pedal = controller.pedal = _open_pedal(env, task_config)
+    if (pedal_mode and not getattr(controller, "pedal_started", False)) or (
+            not pedal_mode and (not gesture or fsm is None)):
         # Home + manual scene reset + sync. In gesture mode only before the first episode; after
         # that teleop runs continuously and the previous episode's end is the next start.
         t_reset0 = time.perf_counter()
@@ -238,6 +280,8 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
         print("[between-episode] env.reset()={:.2f}s".format(time.perf_counter() - t_reset0))
         if not controller.mock:
             _sync_follower_to_leaders(env, controller, FLAGS.sync_max_delta, FLAGS.sync_tolerance)
+        if pedal_mode:
+            controller.pedal_started = True
         if gesture:
             fsm = controller.gesture_fsm = EpisodeGestureFSM(env.control_hz, GestureParams(
                 start_radius=FLAGS.gesture_start_radius, arm_radius=FLAGS.gesture_arm_radius,
@@ -256,6 +300,10 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
     n_steps = 0
     stopped = False  # gesture mode: back home, recording over, waiting for keep/discard
     preroll = collections.deque(maxlen=max(1, int(round(FLAGS.gesture_preroll_s * env.control_hz))))
+    pedal_state = "idle"  # pedal mode: idle -> record -> decide -> (keep/discard) idle
+    clicks_seen = pedal.clicks() if pedal_mode else 0
+    outcome = LeaderGripperOutcome(**_leader_outcome_kwargs(task_config)) if pedal_mode else None
+    frozen_grips = None  # pedal mode, decide: follower gripper commands held while the leaders squeeze
 
     def write_frame(saved_obs, executed, leader):
         nonlocal n_steps
@@ -284,7 +332,9 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
                 f = cv2.resize(f, vid_size, interpolation=cv2.INTER_LINEAR)
             writer.append_data(f)
 
-    if gesture:
+    if pedal_mode:
+        print(f"[pedal] Idle. Reset the scene, then CLICK the pedal to start recording. {_PEDAL_HELP}")
+    elif gesture:
         print("[gesture] Idle. Reset the scene, then move an arm to start recording. Come back home and "
               "hold still to stop, then squeeze BOTH triggers = keep, LEFT alone = discard. (1/2 + Enter still work.)")
     else:
@@ -313,6 +363,9 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
                 return {"success": success, "failure": not success, "steps": n_steps}
 
             action, leader = controller.forward()
+            if frozen_grips is not None:
+                action = np.asarray(action, dtype=np.float64).copy()
+                action[[6, 13]] = frozen_grips
             t_ctrl = time.perf_counter()
 
             sleep_left = 0.0 if last_control_start is None else (1.0 / env.control_hz) - (time.perf_counter() - last_control_start)
@@ -324,7 +377,25 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
             t_step = time.perf_counter()
 
             event = None
-            if gesture:
+            if pedal_mode:
+                clicks = pedal.clicks()
+                clicked = clicks != clicks_seen
+                clicks_seen = clicks
+                if pedal_state == "idle" and clicked:
+                    pedal_state, start_recording = "record", True
+                    event = "start"
+                elif pedal_state == "record" and clicked:
+                    pedal_state, event = "decide", "stop"
+                    frozen_grips = np.asarray(info["executed_action"], dtype=np.float64)[[6, 13]].copy()
+                    outcome.disarm()
+                elif pedal_state == "decide" and clicked:
+                    pedal_state, stopped, frozen_grips = "record", False, None
+                    print("[pedal] Resumed recording. CLICK to stop.")
+                elif pedal_state == "decide":
+                    result = outcome.update(leader)
+                    if result is not None:
+                        event = "keep" if result == "success" else "discard"
+            elif gesture:
                 event = fsm.update(controller.to_follower(leader)[np.r_[0:6, 7:13]], leader[[6, 13]])
                 if event == "ready":
                     print("[gesture] Ready: move an arm to start recording.")
@@ -348,21 +419,33 @@ def collect_trajectory(env, controller, save_filepath=None, recording_folderpath
                 write_frame(saved_obs, info["executed_action"], leader)
             t_rec = time.perf_counter()
 
-            if event == "stop":
+            if event == "stop" and pedal_mode:
+                stopped = True
+                print(f"[pedal] Recording stopped after {n_steps / env.control_hz:.1f} s. Open both leader "
+                      f"grippers, then squeeze + hold the {outcome.success_side.upper()} one = KEEP, the other = "
+                      "DISCARD (CLICK = resume recording).")
+            elif event == "stop":
                 stopped = True
                 print(f"[gesture] Back home after {n_steps / env.control_hz:.1f} s; recording stopped. "
                       "Squeeze BOTH triggers = keep, LEFT alone = discard.")
             elif event in ("keep", "discard"):
                 episode_success = event == "keep"
                 end_reason = event
-                print({"keep": "[gesture] KEEP.", "discard": "[gesture] DISCARD."}[event]
-                      + " Idle: reset the scene, then move an arm to start the next episode.")
+                tag = "[pedal]" if pedal_mode else "[gesture]"
+                nxt = "CLICK the pedal" if pedal_mode else "move an arm"
+                print(f"{tag} {event.upper()}. Idle: reset the scene, then {nxt} to start the next episode.")
                 return {"success": episode_success, "failure": not episode_success, "steps": n_steps,
                         "end_reason": end_reason}
 
             ms = lambda a, b: (b - a) * 1000.0  # noqa: E731
             work = ms(t_start, t_rec) - ms(t_ctrl, t_sleep)
             loop_ms.append(work)
+            if pedal_mode:
+                if pedal_state == "decide" and len(loop_ms) % max(1, int(env.control_hz * 2.0)) == 0:
+                    print(f"[pedal] deciding: leader grippers L={leader[6]:.2f} R={leader[13]:.2f} "
+                          f"({'armed' if outcome._armed else f'open both below {outcome.open_thresh:.2f} first'}; "
+                          f"squeeze > {outcome.close_thresh:.2f} for {outcome.hold_s:.1f} s)", flush=True)
+                continue
             if gesture:
                 # A 2 Hz status line instead of per-step timing, so the reason a stop is not
                 # firing is visible (loop-rate summary still prints at the end of the episode).

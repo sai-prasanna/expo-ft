@@ -297,6 +297,46 @@ class _RealCameras:
                 pass
 
 
+class LeaderGripperOutcome:
+    """Episode outcome from the leader grippers while the pedal is UP (the leaders are idle then).
+
+    Squeeze the `success_side` leader gripper and hold it ~`hold_s` = SUCCESS, the other one = FAILURE.
+    Armed only once both leader grippers have been seen open since the last reset / pedal release, so
+    a grasp still held from an intervention can never end the episode by itself.
+    """
+
+    def __init__(self, success_side: str = "left", close_thresh: float = 0.7, open_thresh: float = 0.3,
+                 hold_s: float = 0.5):
+        assert success_side in SIDES, success_side
+        self.success_side = success_side
+        self.close_thresh, self.open_thresh, self.hold_s = float(close_thresh), float(open_thresh), float(hold_s)
+        self.disarm()
+
+    def disarm(self):
+        self._armed = False
+        self._since = {side: None for side in SIDES}
+
+    def update(self, leader14: np.ndarray, now: float | None = None) -> str | None:
+        """-> "success" | "failure" | None."""
+        now = time.monotonic() if now is None else now
+        g = {"left": float(leader14[6]), "right": float(leader14[13])}
+        if not self._armed:
+            if all(v < self.open_thresh for v in g.values()):
+                self._armed = True
+            return None
+        closed = [side for side in SIDES if g[side] > self.close_thresh]
+        for side in SIDES:
+            if side in closed and len(closed) == 1:
+                self._since[side] = self._since[side] or now
+            else:
+                self._since[side] = None  # both squeezed = ambiguous, ignore
+        for side in SIDES:
+            if self._since[side] is not None and now - self._since[side] >= self.hold_s:
+                self.disarm()
+                return "success" if side == self.success_side else "failure"
+        return None
+
+
 # ====================================================================== env
 class DK1Env:
     def __init__(
@@ -367,6 +407,12 @@ class DK1Env:
         self._pedal = None
         self._leaders = None
         self.prev_obs = None
+        oc = dict(self.intervention_cfg.get("leader_outcome") or {})
+        self._leader_outcome = None
+        if (oc.pop("enabled", True) and self._intervention_device == "gello"
+                and self.intervention_cfg.get("enabled", True)):
+            self._leader_outcome = LeaderGripperOutcome(**oc)
+        self._outcome_epoch = None
         self.done, self.success = False, False
 
         cameras = dict(cameras or {})
@@ -527,24 +573,73 @@ class DK1Env:
         self.safety_held_last = False
         self.safety_stopped = False
         self.done, self.success = False, False
+        if self._leader_outcome is not None:
+            self._leader_outcome.disarm()
         if not self.mock:
-            print("[DK1Env] Episode running. Any time: type 1 + Enter = SUCCESS, 2 + Enter = FAILURE "
-                  "(ends the episode). At the step limit you will be asked.", flush=True)
+            print(f"[DK1Env] Episode running. Any time: {self._outcome_hint()} (ends the episode). "
+                  "At the step limit you will be asked.", flush=True)
         return self.get_observation()
 
+    def _outcome_hint(self) -> str:
+        keys = "type 1 + Enter = SUCCESS, 2 + Enter = FAILURE"
+        if self._leader_outcome is None:
+            return keys
+        s = self._leader_outcome.success_side
+        f = "right" if s == "left" else "left"
+        return (f"open both leader grippers, then squeeze the {s.upper()} one = SUCCESS / {f.upper()} one = "
+                f"FAILURE (pedal up), or {keys}")
+
+    def _poll_leader_outcome(self) -> str | None:
+        """Leader-gripper outcome gesture; only while the pedal is up. -> "success" | "failure" | None."""
+        if self._leader_outcome is None or self._pedal is None:
+            return None
+        engaged, epoch = self._pedal.state()
+        if engaged or epoch != self._outcome_epoch:
+            # human control (or a takeover since the last poll): re-arm from scratch after release
+            self._outcome_epoch = epoch
+            self._leader_outcome.disarm()
+            if engaged:
+                return None
+        try:
+            leader = self.get_leaders().get()
+        except Exception as e:
+            print(f"[DK1Env] leader read for the outcome gesture failed: {e!r}", flush=True)
+            return None
+        result = self._leader_outcome.update(leader)
+        if result is not None:
+            print(f"[DK1Env] Leader gripper: {result.upper()}.", flush=True)
+        return result
+
     def _ask_outcome(self) -> bool:
-        """Blocking: the operator labels a timed-out episode. The arms hold their last command."""
-        while True:
-            print("[DK1Env] Step limit reached. Was it a success? Type 1 = SUCCESS, 2 = FAILURE, then Enter:",
-                  flush=True)
-            try:
-                with open("/dev/tty", "r") as tty:
-                    choice = tty.readline().strip()
-            except OSError:
-                choice = sys.stdin.readline().strip()
-            if choice in ("1", "2"):
-                print(f"[DK1Env] Labelled {'SUCCESS' if choice == '1' else 'FAILURE'}.", flush=True)
-                return choice == "1"
+        """Blocking: the operator labels a timed-out episode (leader gripper or keyboard). The arms hold
+        their last command."""
+        print(f"[DK1Env] Step limit reached. Was it a success? {self._outcome_hint()}:", flush=True)
+        if self._leader_outcome is not None:
+            self._leader_outcome.disarm()
+        try:
+            tty = open("/dev/tty", "r")
+        except OSError:
+            tty = sys.stdin
+        try:
+            while True:
+                result = self._poll_leader_outcome()
+                if result is not None:
+                    return result == "success"
+                if tty is None:
+                    time.sleep(0.05)
+                elif select.select([tty], [], [], 0.05)[0]:
+                    line = tty.readline()
+                    if not line:  # EOF (no terminal): leader gripper only
+                        tty = None
+                        continue
+                    choice = line.strip()
+                    if choice in ("1", "2"):
+                        print(f"[DK1Env] Labelled {'SUCCESS' if choice == '1' else 'FAILURE'}.", flush=True)
+                        return choice == "1"
+                    print(f"[DK1Env] {self._outcome_hint()}:", flush=True)
+        finally:
+            if tty is not None and tty is not sys.stdin:
+                tty.close()
 
     def detect(self, raw_obs):
         """Override for an automatic success detector: returns (success, terminate)."""
@@ -562,7 +657,9 @@ class DK1Env:
         if raw_obs is None:
             raw_obs = self.prev_obs
         time_stop = self.auto_reset_due()
-        manual = success_detector_manual()
+        manual = self._poll_leader_outcome() or success_detector_manual()
+        if manual == "failure":
+            manual = "reset"
         if manual == "success":
             done, success, manual_stop = True, True, True
         elif manual == "reset":
