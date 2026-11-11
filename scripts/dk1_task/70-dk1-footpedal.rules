@@ -1,0 +1,13 @@
+# DK1 foot pedal: a spare mouse (Microsoft 2.4GHz Transceiver v9.0, 045e:07a5) used ONLY as the
+# intervention pedal (client/teleop/pedal.py). The receiver exposes several evdev interfaces
+# (Mouse, a keyboard, Consumer/System Control); one pedal button arrives on the keyboard interface
+# as the Super key (opened the OS start menu). ALL interfaces of this receiver are matched, so do
+# not pair a real Microsoft keyboard with this receiver.
+#  - LIBINPUT_IGNORE_DEVICE: the desktop (X11/Wayland, via libinput) ignores it: no cursor, clicks, keys.
+#  - uaccess: the logged-in user can read /dev/input/eventN without joining the `input` group.
+# Install:
+#   sudo cp scripts/dk1_task/70-dk1-footpedal.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input
+#   (then unplug/replug the receiver if the cursor still moves / Super still fires)
+# Uninstall: sudo rm /etc/udev/rules.d/70-dk1-footpedal.rules and reload/trigger as above.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{idVendor}=="045e", ATTRS{idProduct}=="07a5", ENV{LIBINPUT_IGNORE_DEVICE}="1", TAG+="uaccess"

@@ -196,7 +196,7 @@ async def _handle_environment_request(websocket):
                         is_human = False
                         t_human0 = time.perf_counter()
                         if hasattr(env, "get_human_action"):
-                            # DK1: anchored relative-IK from the leader arms (clutch-gated, own thread).
+                            # DK1: anchored relative-IK from the leader arms (foot-pedal-gated, own thread).
                             human_action, is_human = env.get_human_action()
                             if is_human and human_action is not None:
                                 real_action = np.asarray(human_action, dtype=np.float64)

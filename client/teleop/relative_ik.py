@@ -2,7 +2,7 @@
 
 Port of amazon-far/abc (d0832d1) `RelativeGelloController` + `relative_pose.py`:
 
-  on clutch-in (per arm):  anchor_leader   = FK(leader joints)     (follower model)
+  on pedal press (per arm):  anchor_leader   = FK(leader joints)     (follower model)
                            anchor_follower = FK(follower joints)
   every tick:              target_pos = anchor_follower_pos + (leader_pos - anchor_leader_pos) * pos_scale
                            target_rot = scale(q_leader * q_anchor_leader^-1, rot_scale) * q_anchor_follower
@@ -182,7 +182,7 @@ class RelativeIKController:
 
 # ---------------------------------------------------------------- background thread
 class InterventionThread:
-    """Reads the leaders + runs the IK at `rate_hz` while the clutch is engaged.
+    """Reads the leaders + runs the IK at `rate_hz` while the pedal is held.
 
     read_leader():   -> 14-D leader joints (radians) + triggers (0..1)
     read_follower(): -> 14-D measured follower joints + grippers
@@ -191,14 +191,14 @@ class InterventionThread:
     def __init__(
         self,
         controller: RelativeIKController,
-        clutch,
+        pedal,
         read_leader: Callable[[], np.ndarray],
         read_follower: Callable[[], np.ndarray],
         rate_hz: float = 60.0,
         max_consecutive_errors: int = 6,
     ):
         self.controller = controller
-        self.clutch = clutch
+        self.pedal = pedal
         self.read_leader = read_leader
         self.read_follower = read_follower
         self.period = 1.0 / float(rate_hz)
@@ -208,6 +208,7 @@ class InterventionThread:
         self._anchored_epoch = -1
         self._stop = threading.Event()
         self.last_error: Exception | None = None
+        self.last_leader: np.ndarray | None = None  # latest leader reading (only refreshed while engaged)
         self.max_consecutive_errors = int(max_consecutive_errors)
         self._errors = 0
         self.loop_ms = 0.0
@@ -233,26 +234,27 @@ class InterventionThread:
                         self._target = None
                     self._anchored_epoch = -1
                     self._errors = 0
-                    self.clutch.set_engaged(False)
+                    self.pedal.set_engaged(False)
             self.loop_ms = (time.perf_counter() - t0) * 1000.0
             time.sleep(max(0.0, self.period - (time.perf_counter() - t0)))
 
     def _tick(self):
-        engaged, epoch = self.clutch.state()
+        engaged, epoch = self.pedal.state()
         if not engaged:
             with self._lock:
                 self._active = False
                 self._target = None
             return
         leader = self.read_leader()
+        self.last_leader = leader
         if epoch != self._anchored_epoch:
             self.controller.anchor(leader, self.read_follower())
             self._anchored_epoch = epoch
         target = self.controller.step(leader)
         with self._lock:
-            # The leader read + IK take a while: drop the result if the clutch was released or
+            # The leader read + IK take a while: drop the result if the pedal was released or
             # re-engaged (new anchor needed) meanwhile, so get() never reports a stale human action.
-            if self.clutch.state() != (True, epoch):
+            if self.pedal.state() != (True, epoch):
                 self._active = False
                 self._target = None
                 return
@@ -260,7 +262,7 @@ class InterventionThread:
             self._active = True
 
     def get(self) -> tuple[np.ndarray | None, bool]:
-        if not self.clutch.engaged:
+        if not self.pedal.engaged:
             return None, False
         with self._lock:
             if not self._active or self._target is None:

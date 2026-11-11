@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Rollout client on the robot machine (client_dk1 venv). It dials the learner/eval server.
-# Interventions: run `python -m client.teleop.clutch` in a SECOND terminal (client_dk1 venv)
-# and press SPACE to take over with the leader arms / hand back to the policy.
+# Interventions: HOLD the foot pedal (spare mouse) to take over with the leader arms, release to
+# hand back to the policy. The client opens the pedal itself.
 # Success / reset: type 1 or 2 + Enter in THIS terminal.
 source client_dk1/.venv/bin/activate
 

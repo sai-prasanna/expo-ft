@@ -108,9 +108,8 @@ def get_config():
     # ---- interventions: anchored relative IK from the leader arms ------------------------
     config.intervention = ml_collections.ConfigDict({
         "enabled": True,
-        "clutch_backend": "terminal",  # "terminal" (second terminal, UDP) | "pynput" (X11) | "manual"
-        "clutch_port": 8765,
-        "clutch_key": "f8",  # pynput only; never 1/2 (manual success detector)
+        # foot pedal = a spare mouse (client/teleop/pedal.py); substring of its evdev device name
+        "pedal_name": "2.4GHz Transceiver v9.0 Mouse",
         "rate_hz": 60.0,
         "position_scale": 1.0,
         "rotation_scale": 1.0,

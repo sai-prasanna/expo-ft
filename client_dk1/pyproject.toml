@@ -17,7 +17,7 @@ dependencies = [
     "h5py",
     "imageio[ffmpeg]",
     "numpy",
-    "pynput",  # optional keyboard clutch backend (X11 only)
+    "evdev",  # foot pedal (client/teleop/pedal.py)
 ]
 
 # Hosts the DK1 client deps only; the shared `client/` Python package is run from the

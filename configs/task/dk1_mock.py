@@ -14,5 +14,4 @@ def get_config():
     import numpy as np
     config.reset_joints = np.array([0.0, 0.8, 1.2, 0.0, 0.0, 0.0, 0.0] * 2)
     config.ee_bounds = None  # fake arms: no recorded Cartesian safety
-    config.intervention.clutch_backend = "manual"
     return config

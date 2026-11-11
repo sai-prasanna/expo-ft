@@ -22,6 +22,7 @@ so the server venv can import this module (via configs/task/dk1_*.py) without th
 from __future__ import annotations
 
 import os
+import select
 import sys
 import threading
 import time
@@ -363,7 +364,7 @@ class DK1Env:
         self._clip_count = 0
         self._last_command = None
         self._intervention = None
-        self._clutch = None
+        self._pedal = None
         self._leaders = None
         self.prev_obs = None
         self.done, self.success = False, False
@@ -392,7 +393,7 @@ class DK1Env:
                                    max_gripper_torque=max_gripper_torque, use_bimanual_class=use_bimanual_class,
                                    interp_hz=command_interp_hz, interp_s=1.0 / self.control_hz)
             self._cams = _RealCameras(cameras)
-        # RL rollouts and evals: connect leaders + clutch + IK now, so a broken intervention setup
+        # RL rollouts and evals: connect leaders + pedal + IK now, so a broken intervention setup
         # fails loudly at create_env instead of silently leaving the operator without a takeover,
         # and so the ~15 s connect doesn't freeze the arms in the middle of episode 1.
         if env_usage in ("train", "eval") and self.intervention_cfg.get("enabled", True) and not self.mock:
@@ -474,7 +475,29 @@ class DK1Env:
         if not self.mock:
             time.sleep(self.reset_settle_s)
 
-    def _wait_for_enter(self, msg: str):
+    def _wait_for_enter(self, msg: str, pedal_ok: bool = False):
+        """Block until Enter on the terminal, or (pedal_ok and a real foot pedal is connected) a
+        pedal click (press + release)."""
+        pedal = self._pedal if pedal_ok and self._pedal is not None and self._pedal._thread is not None else None
+        if pedal is not None:
+            print(msg.replace("press Enter", "click the foot pedal (or press Enter)"), flush=True)
+            try:
+                tty = open("/dev/tty", "r")
+            except OSError:
+                tty = sys.stdin
+            try:
+                clicks0 = pedal.clicks()
+                while pedal.clicks() == clicks0:
+                    if select.select([tty], [], [], 0.05)[0]:
+                        tty.readline()
+                        break
+                else:
+                    print("[DK1Env] foot pedal click: starting.", flush=True)
+            finally:
+                if tty is not sys.stdin:
+                    tty.close()
+            self._release_intervention()  # the click engaged the pedal; never start in human control
+            return
         print(msg, flush=True)
         try:
             with open("/dev/tty", "r") as tty:
@@ -498,7 +521,7 @@ class DK1Env:
             target[6] = target[13] = 0.0  # open grippers
             self._move_to(target)
         if self.wait_for_scene_reset:
-            self._wait_for_enter("[DK1Env] Reset the scene, then press Enter to start the episode.")
+            self._wait_for_enter("[DK1Env] Reset the scene, then press Enter to start the episode.", pedal_ok=True)
         self._steps_since_reset = 0
         self._held_streak = 0
         self.safety_held_last = False
@@ -582,14 +605,11 @@ class DK1Env:
                 self._leaders = _RealLeaders(**self._leader_kwargs)
         return self._leaders
 
-    def get_clutch(self):
-        if self._clutch is None:
-            from client.teleop.clutch import Clutch
-            cfg = self.intervention_cfg
-            backend = cfg.get("clutch_backend", "terminal")
-            self._clutch = Clutch(backend=("manual" if self.mock and backend == "terminal" and cfg.get("mock_manual_clutch", True) else backend),
-                                  port=cfg.get("clutch_port", 8765), key=cfg.get("clutch_key", "f8"))
-        return self._clutch
+    def get_pedal(self):
+        if self._pedal is None:
+            from client.teleop.pedal import DEFAULT_PEDAL_NAME, Pedal
+            self._pedal = Pedal(None if self.mock else self.intervention_cfg.get("pedal_name", DEFAULT_PEDAL_NAME))
+        return self._pedal
 
     def _ensure_intervention(self):
         if self._intervention is None:
@@ -609,11 +629,11 @@ class DK1Env:
                 **ik_kwargs,
             )
             leaders = self.get_leaders()
-            self._intervention = InterventionThread(controller, self.get_clutch(), leaders.get, self._arms.get, rate_hz=rate)
+            self._intervention = InterventionThread(controller, self.get_pedal(), leaders.get, self._arms.get, rate_hz=rate)
         return self._intervention
 
     def get_human_action(self):
-        """(action14 or None, is_human). Starts the leaders/clutch/IK thread on first call."""
+        """(action14 or None, is_human). Starts the leaders/pedal/IK thread on first call."""
         if not self.intervention_cfg.get("enabled", True):
             return None, False
         try:
@@ -628,8 +648,8 @@ class DK1Env:
         return thread.get()
 
     def _release_intervention(self):
-        if self._clutch is not None and self._clutch.engaged:
-            self._clutch.set_engaged(False)
+        if self._pedal is not None and self._pedal.engaged:
+            self._pedal.set_engaged(False)
 
     def _open_grippers(self, hold_s: float = 0.7):
         """Open both grippers while the arm joints hold their current pose."""
@@ -683,13 +703,13 @@ class DK1Env:
         self._closed = True
         if park:
             self.park()
-        for obj in (self._intervention, self._clutch, self._leaders, self._cams, self._arms):
+        for obj in (self._intervention, self._pedal, self._leaders, self._cams, self._arms):
             if obj is not None:
                 try:
                     obj.close()
                 except Exception:
                     pass
-        self._intervention = self._clutch = self._leaders = None
+        self._intervention = self._pedal = self._leaders = None
 
 
 __all__ = ["DK1Env", "clip_to_limits", "clip_joint_delta", "IMAGE_KEYS"]

@@ -2,7 +2,7 @@
 
   TASK_CONFIG=configs/task/dk1_task_rl.py bash scripts/dk1_task/run_policy.sh
 
-- No leader arms / clutch: interventions are off. The operator still resets the scene (Enter)
+- No leader arms / pedal: interventions are off. The operator still resets the scene (Enter)
   and labels each episode (1 = success, 2 = failure).
 - Joint cap 0.2 rad/step vs the measured joints (as dk1_task_safe.py), and 0.1 rad/step between
   consecutive commands (demo p99.9 = 0.104 rad) against lurches at chunk switches.

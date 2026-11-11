@@ -291,6 +291,7 @@ def main(_):
         ep_return = 0.0
         ep_len = 0
         trace = {"state": [], "action": [], "executed": [], "action_type": [], "t": [], "safety_held": []}
+        action_type = "policy"  # of the previous step
 
         def run_pre_cache(agent_snapshot, obs, prefix):
             compute_start = time.time()
@@ -356,7 +357,9 @@ def main(_):
             launch_async_inference(observation)
 
             t_plan0 = time.time()
-            if not action_plan:
+            # As in train_pi_robo.py: no inference while the human controls (the client replaces
+            # the hold placeholder with the leader action); on release, one hold step, then replan.
+            if not action_plan and action_type != "human":
                 compute_ms = None
                 if supports_pre_cache_delay:
                     if prefix_cache is None:
@@ -423,7 +426,8 @@ def main(_):
             else:
                 sample_info_history.append(sample_info_history[-1] if sample_info_history else None)
             timing["plan_ms"] = (time.time() - t_plan0) * 1000.0
-            action = action_plan.popleft()
+            # all -1 = client holds (or uses the human action); zeros would be a joint target
+            action = action_plan.popleft() if action_plan else np.full(np.asarray(example_action).shape[-1], -1.0)
 
             ep_return += reward
             ep_len += 1
@@ -465,8 +469,16 @@ def main(_):
                 trace["executed"].append(np.asarray(executed, dtype=np.float32).reshape(-1)[:14])
                 trace["action_type"].append(str(action_type))
             except (TypeError, ValueError):
+                action_type = "?"
                 trace["executed"].append(np.full(14, np.nan, np.float32))
                 trace["action_type"].append("?")
+            if action_type == "human":
+                # Foot-pedal takeover: the rest of the chunk was planned from a state the human has
+                # since moved away from (absolute targets would yank the arm back on release).
+                # Drop it, and the prefix / in-flight inference, so the next step replans.
+                action_plan.clear()
+                prefix_cache = None
+                pending_inference = clear_pending(pending_inference)
             trace["t"].append(last_control_start)
             trace["safety_held"].append(bool(getattr(env.client, "last_safety_held", False)))
             timing["act_ms"] = (time.time() - t_act0) * 1000.0
