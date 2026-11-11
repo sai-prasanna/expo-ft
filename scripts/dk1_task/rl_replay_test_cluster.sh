@@ -12,7 +12,7 @@ set -euo pipefail
 
 DATA_ROOT="${DATA_ROOT:-/weka/martius/mot244/data/expo-ft}"
 export SFT_CKPT="${SFT_CKPT:-/weka/martius/mot244/runs/expo-ft/20261104-1616-dk1-sft-bs64-95333eeb/ckpt/expo_pi05_dk1_lora_finetune_sft/dk1_task_20_lora_sft/4000/params}"
-export DATASET_PATH="$DATA_ROOT/raw/stack_green_blue/success"
+export DATASET_PATH="${DATASET_PATH:-$DATA_ROOT/raw/stack_green_blue/success}"
 export ASSETS_DIR="$DATA_ROOT/assets/expo_pi05_dk1_lora_finetune_sft"
 export OUTPUT_DIR="${CLUSTER_OUTPUT_DIR:-./outputs/rl_replay_test}"
 export MAX_STEPS="${MAX_STEPS:-12000}"   # replay capacity too: 5059 demo steps + ~25 episodes
@@ -31,12 +31,14 @@ mkdir -p "$OUTPUT_DIR"
 source "$UV_PROJECT_ENVIRONMENT/bin/activate"
 nvidia-smi -L
 
-# The replay config reads data/stack_green_blue/success relative to the repo.
-mkdir -p data/stack_green_blue
-ln -sfn "$DATASET_PATH" data/stack_green_blue/success
+# The replay config reads REPLAY_DIR (data/<name>/success) relative to the repo.
+REPLAY_CONFIG="${REPLAY_CONFIG:-configs/task/dk1_replay.py}"
+REPLAY_DIR="${REPLAY_DIR:-data/stack_green_blue/success}"
+mkdir -p "$(dirname "$REPLAY_DIR")"
+ln -sfn "$DATASET_PATH" "$REPLAY_DIR"
 
 python -m client.run_client --host=localhost --port="$CLIENT_PORT" \
-    --config_task_path=configs/task/dk1_replay.py > "$OUTPUT_DIR/replay_client.log" 2>&1 &
+    --config_task_path="$REPLAY_CONFIG" > "$OUTPUT_DIR/replay_client.log" 2>&1 &
 CLIENT_PID=$!
 trap 'kill $CLIENT_PID 2>/dev/null || true' EXIT
 

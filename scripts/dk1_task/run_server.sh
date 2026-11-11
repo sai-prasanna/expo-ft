@@ -15,16 +15,19 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 # OOMs at that on the 32 GB 5090.
 export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.92}"
 
-DATA_ID="dk1_task_20"
+# Pick-into-bowl: TASK_CONFIG=configs/task/dk1_pick.py DATA_ID=dk1_pnp_bowl_new_50 NUM_DATA=50
+TASK_CONFIG="${TASK_CONFIG:-configs/task/dk1_task.py}"
+DATA_ID="${DATA_ID:-dk1_task_20}"
+NUM_DATA="${NUM_DATA:-20}"
 SFT_CKPT="${SFT_CKPT:-./checkpoints/expo_pi05_dk1_lora_finetune_sft/${DATA_ID}_lora_sft/4000/params}"
 DATASET_PATH="${DATASET_PATH:-./data/stack_green_blue/success}"
 ASSETS_DIR="${ASSETS_DIR:-./assets/expo_pi05_dk1_lora_finetune_sft}"
 OUTPUT_DIR="${OUTPUT_DIR:-./checkpoints/dk1_task}"
 
 python train_pi_robo.py \
-    --config_task=configs/task/dk1_task.py \
+    --config_task="$TASK_CONFIG" \
     --dataset_path="$DATASET_PATH" \
-    --num_data=20 \
+    --num_data="$NUM_DATA" \
     --update_type=episode \
     --num_updates=3 \
     --offline_ratio=0 \

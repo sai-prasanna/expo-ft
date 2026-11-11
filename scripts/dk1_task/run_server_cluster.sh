@@ -14,7 +14,7 @@ set -euo pipefail
 
 DATA_ROOT="${DATA_ROOT:-/weka/martius/mot244/data/expo-ft}"
 export SFT_CKPT="${SFT_CKPT:-/weka/martius/mot244/runs/expo-ft/20261104-1616-dk1-sft-bs64-95333eeb/ckpt/expo_pi05_dk1_lora_finetune_sft/dk1_task_20_lora_sft/4000/params}"
-export DATASET_PATH="$DATA_ROOT/raw/stack_green_blue/success"
+export DATASET_PATH="${DATASET_PATH:-$DATA_ROOT/raw/stack_green_blue/success}"
 export ASSETS_DIR="$DATA_ROOT/assets/expo_pi05_dk1_lora_finetune_sft"
 export RUN_NAME="${RUN_NAME:-expo_dk1_task_nohil}"
 export OUTPUT_DIR="${OUTPUT_DIR:-${CLUSTER_SHARED_DIR:-$PWD/.cluster-shared}/rl}"
