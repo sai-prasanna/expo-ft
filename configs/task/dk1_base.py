@@ -89,10 +89,6 @@ def get_config():
     # `python -m client.dk1_record_safety` into dk1_hardware.json. Off until recorded.
     # EE box per arm in that arm's base frame (m), [[xmin,xmax],[ymin,ymax],[zmin,zmax]].
     config.ee_bounds = hw.get("ee_bounds")
-    # Right arm base frame -> left arm base frame (4x4), for the arm-to-arm distance check.
-    config.right_base_in_left = hw.get("right_base_in_left")
-    # Closest wrist/flange/tool0 pair of the two arms (m). No handovers in our tasks.
-    config.min_arm_distance = hw.get("min_arm_distance", 0.08)
     # On: 15 Hz steps caused micro jerks in teleop. A 100 Hz thread
     # ramps each new target over one control period (adds ~66 ms lag). 0.0 = off.
     config.command_interp_hz = 100.0

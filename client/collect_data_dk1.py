@@ -56,6 +56,9 @@ flags.DEFINE_integer("video_save_height", 240, "Height of saved MP4 frames.")
 flags.DEFINE_float("motion_threshold", 0.03, "Leader joint motion (rad) that starts recording.")
 flags.DEFINE_float("sync_max_delta", 0.25, "Per-step joint limit (rad) while the follower syncs to the leaders.")
 flags.DEFINE_float("sync_tolerance", 0.05, "Follower-leader joint error (rad) that ends the sync phase.")
+flags.DEFINE_bool("ee_box", False, "Apply the per-arm EE safety box (hardware ee_bounds) while collecting. Off by "
+                  "default: a hold freezes the follower mid-air while the leader moves on. The 8 cm arm-to-arm "
+                  "check and the joint limits stay on.")
 flags.DEFINE_integer("mock_episode_steps", 30, "mock=True only: steps per scripted episode (auto success).")
 flags.DEFINE_bool("gesture_control", True,
                   "Hands-free episodes (client/teleop/episode_gestures.py): recording starts when the "
@@ -424,6 +427,8 @@ def main(_):
     env_kwargs = dict(task_config)
     env_kwargs["video_dir"] = ""
     env_kwargs["env_usage"] = "collect"
+    if not FLAGS.ee_box:
+        env_kwargs["ee_bounds"] = None
     env = task_config.env(**env_kwargs)
     env.ignore_auto_reset = True  # teleop episodes end on the manual detector only
     controller = LeaderMirror(env, task_config, mock_steps=FLAGS.mock_episode_steps)

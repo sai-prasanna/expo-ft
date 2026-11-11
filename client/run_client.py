@@ -227,6 +227,7 @@ async def _handle_environment_request(websocket):
                             "status": "success",
                             "action": executed_action.tolist(),
                             "action_type": action_type,
+                            "safety_held": bool(getattr(env, "safety_held_last", False)),
                         }
                     t_send0 = time.perf_counter()
                     await websocket.send(packer.pack(response))
@@ -263,6 +264,7 @@ async def _handle_environment_request(websocket):
                             "success": bool(success),
                             "reward": float(reward),
                             "mask": float(mask),
+                            "safety_stop": bool(getattr(env, "safety_stopped", False)),
                         }
                     await websocket.send(packer.pack(response))
 
@@ -280,6 +282,7 @@ async def _handle_environment_request(websocket):
                             "success": bool(success),
                             "reward": float(reward),
                             "mask": float(mask),
+                            "safety_stop": bool(getattr(env, "safety_stopped", False)),
                         }
                     await websocket.send(packer.pack(response))
 

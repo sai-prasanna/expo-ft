@@ -20,4 +20,6 @@ def get_config():
     config.language_instruction = "Pick the blue cube and put it in the bowl"
     config.control_hz = 15
     config.auto_reset_steps = 300  # 20 s; expect demos of ~8-12 s
+    # Cartesian safety held the arms this many steps in a row -> end as a "safety stop" (2 s).
+    config.safety_stop_steps = 30
     return config

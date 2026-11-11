@@ -38,6 +38,10 @@ class EnvClient:
         # Termination/detection piggybacked on the last get_observation() response,
         # consumed by get_info_for_step() so it needs no separate round-trip.
         self._last_info = None
+        # DK1 Cartesian safety: whether the last step was held, and whether the episode ended as
+        # a safety stop (neither success nor failure). Absent from older clients -> False.
+        self.last_safety_held = False
+        self.last_safety_stop = False
         # The accept server runs in a background thread and hands each incoming
         # connection to the calling loop via this condition/slot.
         self._server = None
@@ -165,6 +169,7 @@ class EnvClient:
 
     def reset(self, env_id: str) -> Tuple[Dict[str, Any], bool]:
         """Reset an environment."""
+        self.last_safety_held = self.last_safety_stop = False
         response = self._call_operation("reset", {"env_id": env_id})
         return response["observation"], response["done"]
 
@@ -173,6 +178,7 @@ class EnvClient:
         response = self._call_operation("step", {"env_id": env_id, "action": action})
         real_action = np.array(response.get("action", action))
         action_type = response.get("action_type", "policy")
+        self.last_safety_held = bool(response.get("safety_held", False))
         return real_action, action_type
 
     def get_observation(self, env_id: str) -> dict:
@@ -181,6 +187,7 @@ class EnvClient:
         # Termination/detection is piggybacked on the obs response (server computes it on
         # the same frame). Cache it so get_info_for_step needs no separate round-trip.
         if "done" in response:
+            self.last_safety_stop = bool(response.get("safety_stop", False))
             self._last_info = (
                 response["done"], response["success"],
                 response["reward"], response["mask"],
@@ -197,6 +204,7 @@ class EnvClient:
             self._last_info = None
             return info
         response = self._call_operation("get_info_for_step", {"env_id": env_id})
+        self.last_safety_stop = bool(response.get("safety_stop", False))
         return response["done"], response["success"], response["reward"], response["mask"]
 
     def home(self, env_id: str) -> None:

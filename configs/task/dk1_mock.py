@@ -13,6 +13,6 @@ def get_config():
     # Any in-limit home pose works for the mock arms.
     import numpy as np
     config.reset_joints = np.array([0.0, 0.8, 1.2, 0.0, 0.0, 0.0, 0.0] * 2)
-    config.ee_bounds = config.right_base_in_left = None  # fake arms: no recorded Cartesian safety
+    config.ee_bounds = None  # fake arms: no recorded Cartesian safety
     config.intervention.clutch_backend = "manual"
     return config

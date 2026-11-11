@@ -255,6 +255,7 @@ def main(_):
     logger.info("Warm-up done in %.1f s (actions discarded).", time.time() - warm_t0)
 
     successes = []
+    outcomes = []
     episode_returns = []
     episode_lengths = []
     supports_pre_cache_delay = hasattr(agent, "sample_pre_cache") and FLAGS.delay > 0
@@ -285,7 +286,7 @@ def main(_):
         sample_info_history = []
         ep_return = 0.0
         ep_len = 0
-        trace = {"state": [], "action": [], "executed": [], "action_type": [], "t": []}
+        trace = {"state": [], "action": [], "executed": [], "action_type": [], "t": [], "safety_held": []}
 
         def run_pre_cache(agent_snapshot, obs, prefix):
             compute_start = time.time()
@@ -463,6 +464,7 @@ def main(_):
                 trace["executed"].append(np.full(14, np.nan, np.float32))
                 trace["action_type"].append("?")
             trace["t"].append(last_control_start)
+            trace["safety_held"].append(bool(getattr(env.client, "last_safety_held", False)))
             timing["act_ms"] = (time.time() - t_act0) * 1000.0
 
             timing_total_ms = (time.time() - step_t0) * 1000.0
@@ -481,14 +483,24 @@ def main(_):
 
         pending_inference = clear_pending(pending_inference)
 
+        safety_stop = bool(getattr(env.client, "last_safety_stop", False)) and not success
+        outcome = "success" if success else ("safety_stop" if safety_stop else "failure")
+        outcomes.append(outcome)
         successes.append(success)
         episode_returns.append(ep_return)
         episode_lengths.append(ep_len)
-        logger.info("  success=%s return=%.1f len=%d", success, ep_return, ep_len)
+        logger.info("  outcome=%s return=%.1f len=%d safety-held steps=%d", outcome, ep_return, ep_len,
+                    int(np.sum(trace["safety_held"])))
         if trace["state"]:
+            trace["outcome"] = outcome
             _log_trace(trace, ep + 1, video_dir)
 
     n = len(successes)
+    n_stop = outcomes.count("safety_stop")
+    n_succ = outcomes.count("success")
+    logger.info("Outcomes: %d success, %d failure, %d safety stop (of %d). Success rate excluding "
+                "safety stops: %s", n_succ, outcomes.count("failure"), n_stop, n,
+                f"{n_succ / (n - n_stop):.2f}" if n > n_stop else "n/a")
     success_rate = float(np.mean(successes))
     mean_return = float(np.mean(episode_returns))
     mean_len = float(np.mean(episode_lengths))
@@ -526,7 +538,9 @@ def _log_trace(trace, ep, out_dir):
     if out_dir:
         fn = os.path.join(out_dir, f"trace_ep{ep:03d}_{time.strftime('%H%M%S')}.npz")
         np.savez(fn, state=st, action=act, executed=exe, t=np.asarray(trace["t"], float),
-                 action_type=np.asarray(trace["action_type"]))
+                 action_type=np.asarray(trace["action_type"]),
+                 safety_held=np.asarray(trace.get("safety_held", []), bool),
+                 outcome=np.asarray(trace.get("outcome", "")))
         logger.info("  [trace ep %d] saved %s", ep, fn)
 
 

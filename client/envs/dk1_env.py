@@ -320,11 +320,10 @@ class DK1Env:
         wait_for_scene_reset: bool = True,
         auto_reset_steps: int = 300,
         ignore_auto_reset: bool = False,
+        safety_stop_steps: int = 0,
         max_joint_delta_per_step: float | None = 0.1,
         max_command_delta_per_step: float | None = None,
         ee_bounds=None,
-        right_base_in_left=None,
-        min_arm_distance=None,
         command_interp_hz: float = 0.0,
         rest_joints=None,
         intervention: dict | None = None,
@@ -343,13 +342,18 @@ class DK1Env:
         self.wait_for_scene_reset = bool(wait_for_scene_reset) and not self.mock
         self.auto_reset_steps = int(auto_reset_steps)
         self.ignore_auto_reset = bool(ignore_auto_reset)
+        # End the episode as a "safety stop" (neither success nor failure) once the Cartesian safety
+        # has held the arms this many consecutive steps; 0 = off.
+        self.safety_stop_steps = int(safety_stop_steps)
+        self._held_streak = 0
+        self.safety_held_last = False
+        self.safety_stopped = False
         self.max_joint_delta_per_step = max_joint_delta_per_step
         self.max_command_delta_per_step = max_command_delta_per_step
         self._rate_count = 0
-        self.safety = DK1Safety(ee_bounds, right_base_in_left, min_arm_distance)
+        self.safety = DK1Safety(ee_bounds)
         if self.safety.active:
-            print(f"[DK1Env] Cartesian safety: EE box {'on' if self.safety.ee_bounds is not None else 'off'}, "
-                  f"arm-to-arm min distance {self.safety.min_dist if self.safety.min_dist is not None else 'off'}")
+            print("[DK1Env] Cartesian safety: per-arm EE box on")
         self.intervention_cfg = dict(intervention or {})
         self.rest_joints = None if rest_joints is None else np.asarray(rest_joints, dtype=np.float64).reshape(14)
         self._closed = False
@@ -445,6 +449,8 @@ class DK1Env:
         if action.shape[0] < 14:
             raise ValueError(f"DK1Env expects a 14-D action, got {action.shape}")
         executed = self.safe_action(action, max_delta=max_delta)
+        self.safety_held_last = bool(getattr(self.safety, "last_held", False)) and not _is_hold(action)
+        self._held_streak = self._held_streak + 1 if self.safety_held_last else 0
         self._arms.send(executed)
         self._last_command = executed.copy()
         return {"executed_action": executed}
@@ -494,6 +500,9 @@ class DK1Env:
         if self.wait_for_scene_reset:
             self._wait_for_enter("[DK1Env] Reset the scene, then press Enter to start the episode.")
         self._steps_since_reset = 0
+        self._held_streak = 0
+        self.safety_held_last = False
+        self.safety_stopped = False
         self.done, self.success = False, False
         if not self.mock:
             print("[DK1Env] Episode running. Any time: type 1 + Enter = SUCCESS, 2 + Enter = FAILURE "
@@ -538,7 +547,14 @@ class DK1Env:
         else:
             manual_stop = False
             success, terminate = self.detect(raw_obs)
-            done = bool(success or terminate or time_stop)
+            if (not success and self.safety_stop_steps > 0
+                    and self._held_streak >= self.safety_stop_steps):
+                self.safety_stopped = True
+                print(f"[DK1Env] SAFETY STOP: the Cartesian safety held the arms {self._held_streak} steps in a "
+                      f"row ({self.safety.counts}). Episode ended; counted separately, not as a failure.",
+                      flush=True)
+                time_stop = False
+            done = bool(success or terminate or time_stop or self.safety_stopped)
             if time_stop and not success and not self.mock:
                 success = self._ask_outcome()
         if done:

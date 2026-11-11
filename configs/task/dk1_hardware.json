@@ -1,25 +1,25 @@
 {
-  "left_follower_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2.2.1:1.0",
-  "right_follower_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2.2.2:1.0",
-  "left_leader_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2.3.2:1.0",
-  "right_leader_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2.3.3:1.0",
+  "left_follower_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:6.3:1.0",
+  "right_follower_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:6.4:1.0",
+  "left_leader_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:5.2:1.0",
+  "right_leader_port": "/dev/serial/by-path/pci-0000:00:14.0-usb-0:5.3:1.0",
   "cameras": {
     "left_wrist": {
-      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.2.3:1.0-video-index0",
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:6.1:1.0-video-index0",
       "width": 640,
       "height": 480,
       "fps": 30,
       "rotation": 180
     },
     "right_wrist": {
-      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.2.4:1.0-video-index0",
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:6.2:1.0-video-index0",
       "width": 640,
       "height": 480,
       "fps": 30,
       "rotation": 180
     },
     "head": {
-      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:3.3.1:1.0-video-index0",
+      "index_or_path": "/dev/v4l/by-path/pci-0000:00:14.0-usb-0:4.1:1.0-video-index0",
       "width": 640,
       "height": 480,
       "fps": 30,
@@ -29,63 +29,82 @@
   "ee_bounds": {
     "left": [
       [
-        0.0812,
-        0.5774
+        -0.0468,
+        0.5814
       ],
       [
-        -0.4095,
-        0.285
+        -0.4585,
+        0.2927
       ],
       [
-        0.012,
-        0.3455
+        0.0027,
+        0.4361
       ]
     ],
     "right": [
       [
-        0.141,
-        0.6555
+        -0.0492,
+        0.5914
       ],
       [
-        -0.3281,
-        0.5256
+        -0.2585,
+        0.4756
       ],
       [
-        0.012,
-        0.3712
+        0.0053,
+        0.4066
       ]
     ]
   },
-  "right_base_in_left": [
-    [
-      0.97129,
-      0.237,
-      -0.0206,
-      -0.05818
-    ],
-    [
-      -0.23233,
-      0.96365,
-      0.13194,
-      -0.41858
-    ],
-    [
-      0.05112,
-      -0.12337,
-      0.99104,
-      0.01277
-    ],
-    [
-      0.0,
-      0.0,
-      0.0,
-      1.0
-    ]
-  ],
-  "min_arm_distance": 0.08,
   "safety_recorded": {
-    "date": "2026-11-06 17:03",
-    "fit_rms_m": 0.0061,
-    "floor_note": "z floor set to demo min tool0 z (0.017) - 5 mm: demo grasps command ~1-2 cm below the touched table height"
+    "date": "2026-11-10 11:22",
+    "raw": {
+      "table_z": {
+        "left": [
+          0.0157
+        ],
+        "right": [
+          0.015299999999999998
+        ]
+      },
+      "sweep_range": {
+        "left": [
+          [
+            -0.0268,
+            0.5614
+          ],
+          [
+            -0.4355,
+            0.2727
+          ],
+          [
+            0.0207,
+            0.41609999999999997
+          ]
+        ],
+        "right": [
+          [
+            -0.0292,
+            0.5694
+          ],
+          [
+            -0.23850000000000002,
+            0.4526
+          ],
+          [
+            0.0203,
+            0.3866
+          ]
+        ]
+      }
+    },
+    "params": {
+      "press_in": 0.01,
+      "max_press_in": 0.02,
+      "demo_margin": 0.003,
+      "box_margin": 0.02,
+      "demos": "data/dk1_pnp_bowl_new/success/*/traj.hdf5"
+    },
+    "refit": "2026-11-10 12:13"
   }
 }

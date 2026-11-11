@@ -1,14 +1,14 @@
-"""Cartesian safety for the bimanual DK1: an EE box per arm and a minimum arm-to-arm distance.
+"""Cartesian safety for the bimanual DK1: an EE box per arm.
 
-Both act on the joint command after the per-step joint cap (DK1Env.safe_action), with the same rule:
-a command that makes a violation worse holds the arm joints at the measured pose (grippers still
-move); a command that reduces it is allowed, so an arm can always move back out.
+Acts on the joint command after the per-step joint cap (DK1Env.safe_action): a command that pushes
+an arm's `tool0` further out of its box holds that arm's joints at the measured pose (grippers
+still move); a command that reduces the violation is allowed, so an arm can always move back in.
 
 - ee_bounds: {"left"|"right": [[xmin,xmax],[ymin,ymax],[zmin,zmax]]} for `tool0`, each in that arm's
-  base frame (m). A violating arm holds on its own.
-- min_arm_distance + right_base_in_left (4x4, right base frame -> left base frame): the closest
-  pair among {wrist, flange, tool0} of the two arms must stay >= min_arm_distance (point-to-point,
-  not surface). On a violation both arms hold.
+  base frame (m). Each arm holds on its own.
+
+There is no arm-to-arm check (removed 2026-11-10: never triggered in demos, closest 0.195 m, and its
+calibration was the most tedious part of recording).
 
 Values are recorded on the robot with `python -m client.dk1_record_safety` and stored in
 configs/task/dk1_hardware.json.
@@ -46,34 +46,17 @@ class DK1Points:
         return self.data.xpos[self.ids].copy()
 
 
-def to_left(T_right_in_left: np.ndarray, pts_right: np.ndarray) -> np.ndarray:
-    return pts_right @ T_right_in_left[:3, :3].T + T_right_in_left[:3, 3]
-
-
-def fit_rigid(p_right: np.ndarray, p_left: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Kabsch: 4x4 T with p_left ~= R p_right + t. Returns (T, per-point residual in m)."""
-    p_right, p_left = np.asarray(p_right, float), np.asarray(p_left, float)
-    cr, cl = p_right.mean(0), p_left.mean(0)
-    U, _, Vt = np.linalg.svd((p_right - cr).T @ (p_left - cl))
-    D = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])
-    R = Vt.T @ D @ U.T
-    T = np.eye(4)
-    T[:3, :3], T[:3, 3] = R, cl - R @ cr
-    return T, np.linalg.norm(to_left(T, p_right) - p_left, axis=1)
-
-
 class DK1Safety:
-    def __init__(self, ee_bounds=None, right_base_in_left=None, min_arm_distance=None):
+    def __init__(self, ee_bounds=None):
         self.ee_bounds = None if ee_bounds is None else {
             s: np.asarray(ee_bounds[s], float).reshape(3, 2) for s in SIDES}
-        self.T = None if right_base_in_left is None else np.asarray(right_base_in_left, float).reshape(4, 4)
-        self.min_dist = None if (min_arm_distance is None or self.T is None) else float(min_arm_distance)
         self._fk = None
-        self.counts = {"box_left": 0, "box_right": 0, "arm_distance": 0}
+        self.counts = {"box_left": 0, "box_right": 0}
+        self.last_held = False
 
     @property
     def active(self) -> bool:
-        return self.ee_bounds is not None or self.min_dist is not None
+        return self.ee_bounds is not None
 
     def fk(self) -> DK1Points:
         if self._fk is None:
@@ -88,29 +71,22 @@ class DK1Safety:
         box = self.ee_bounds[side]
         return float((np.maximum(box[:, 0] - ee, 0) + np.maximum(ee - box[:, 1], 0)).sum())
 
-    def arm_distance(self, pts: dict) -> float:
-        right = to_left(self.T, pts["right"])
-        return float(np.min(np.linalg.norm(pts["left"][:, None, :] - right[None, :, :], axis=-1)))
-
     def apply(self, action14, current14) -> np.ndarray:
-        """Hold the arm joints that a command would push further into a violation."""
+        """Hold the arm joints that a command would push further into a violation.
+
+        Sets self.last_held: whether any arm was held on this call."""
+        self.last_held = False
         if not self.active:
             return action14
         a = np.asarray(action14, float).copy()
+        counts_before = sum(self.counts.values())
         cmd, cur = self.points(a), self.points(current14)
-        if self.ee_bounds is not None:
-            for s in SIDES:
-                new = self.box_excess(s, cmd[s][-1])
-                if new > 0 and new >= self.box_excess(s, cur[s][-1]):
-                    a[ARM_JOINTS[s]] = np.asarray(current14, float)[ARM_JOINTS[s]]
-                    cmd[s] = cur[s]
-                    self.counts[f"box_{s}"] += 1
-        if self.min_dist is not None:
-            new = self.arm_distance(cmd)
-            if new < self.min_dist and new < self.arm_distance(cur):
-                for s in SIDES:
-                    a[ARM_JOINTS[s]] = np.asarray(current14, float)[ARM_JOINTS[s]]
-                self.counts["arm_distance"] += 1
+        for s in SIDES:
+            new = self.box_excess(s, cmd[s][-1])
+            if new > 0 and new >= self.box_excess(s, cur[s][-1]):
+                a[ARM_JOINTS[s]] = np.asarray(current14, float)[ARM_JOINTS[s]]
+                self.counts[f"box_{s}"] += 1
+        self.last_held = sum(self.counts.values()) > counts_before
         return a
 
     def summary_and_reset(self) -> str:
@@ -122,7 +98,7 @@ class DK1Safety:
 def check_demos(safety: DK1Safety, demo_glob: str) -> dict:
     """Run recorded demos (state = current, action14 = command) through `safety`.
 
-    Returns held-step counts and the demos' extremes (tool0 ranges per arm, min arm distance).
+    Returns held-step counts and the demos' commanded tool0 range per arm (what the safety checks).
     """
     import glob
 
@@ -134,7 +110,6 @@ def check_demos(safety: DK1Safety, demo_glob: str) -> dict:
     held = steps = 0
     lo = {s: np.full(3, np.inf) for s in SIDES}
     hi = {s: np.full(3, -np.inf) for s in SIDES}
-    min_d = np.inf
     for p in paths:
         with h5py.File(p, "r") as f:
             st = f["saved_observation"]["state"][:].astype(float)
@@ -145,9 +120,6 @@ def check_demos(safety: DK1Safety, demo_glob: str) -> dict:
             pts = safety.points(act[t])
             for s in SIDES:
                 lo[s], hi[s] = np.minimum(lo[s], pts[s][-1]), np.maximum(hi[s], pts[s][-1])
-            if safety.T is not None:
-                min_d = min(min_d, safety.arm_distance(pts))
         steps += len(act)
     return {"episodes": len(paths), "steps": steps, "held": held, "counts": dict(safety.counts),
-            "tool0_range": {s: np.stack([lo[s], hi[s]], 1) for s in SIDES},
-            "min_arm_distance": None if safety.T is None else min_d}
+            "tool0_range": {s: np.stack([lo[s], hi[s]], 1) for s in SIDES}}
