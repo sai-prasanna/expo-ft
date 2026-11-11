@@ -8,8 +8,9 @@ Feature names equal the env observation keys (client/envs/dk1_env.py), which the
     state   : float32 (14,)
     actions : float32 (14,)   = action/<task_config.action_space> (the executed 14-D action)
 fps = task_config.control_hz.
-With task_config.ee_control (configs/task/dk1_pick_ee.py), state/actions are converted to the
-DROID-style EE space of client/envs/dk1_ee.py instead: state (20,), actions (14,). The task (prompt) of each episode is the prompt stored in its
+With --action_space=ee, state/actions are converted to the DROID-style EE space of
+expo_ft/env/dk1_ee.py instead: state (20,), actions (14,). The action space is recorded in
+meta/action_space.json, which training copies into the checkpoint. The task (prompt) of each episode is the prompt stored in its
 traj.hdf5 (collect_data_dk1.py --prompt), falling back to task_config.language_instruction.
 
     uv run scripts/convert_dk1_data_to_lerobot.py --data_dir data/dk1_task/success \
@@ -58,6 +59,7 @@ def main(
     repo_name: str,
     task_config: str,
     max_episodes: int | None = None,
+    action_space: str = "joint",
     push_to_hub: bool = False,
 ):
     output_path = HF_LEROBOT_HOME / repo_name
@@ -72,10 +74,10 @@ def main(
     action_dim = 14
     state_dim = 14
     ee = None
-    if cfg.get("ee_control"):
-        from client.envs.dk1_ee import EE_STATE_DIM, DK1EEConverter
+    if action_space == "ee":
+        from expo_ft.env.dk1_ee import EE_STATE_DIM, DK1EE
 
-        ee, state_dim = DK1EEConverter(), EE_STATE_DIM
+        ee, state_dim = DK1EE(), EE_STATE_DIM
         print("EE control: DROID-style per-arm cartesian velocity actions, 20-D EE state")
 
     dataset = LeRobotDataset.create(
@@ -127,7 +129,10 @@ def main(
 
     for p, n in prompt_counts.items():
         print(f"  {n:4d} episodes: {p!r}")
-    print(f"Saved LeRobot dataset to {output_path}")
+    from expo_ft.utils.action_space import write
+
+    write(output_path / "meta", action_space)
+    print(f"Saved LeRobot dataset to {output_path} (action space {action_space!r})")
     if push_to_hub:
         dataset.push_to_hub(tags=["trlc_dk1", "bimanual"], private=True, push_videos=True)
 

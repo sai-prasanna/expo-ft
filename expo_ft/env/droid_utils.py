@@ -68,10 +68,10 @@ def process_droid_dataset(
                 ep_actions = np.concatenate([a1, a2[:, None] if len(a2.shape) == 1 else a2], axis=-1)
             
             if task_config.get("ee_control"):
-                # DK1 EE action space (client/envs/dk1_ee.py): same conversion as the LeRobot export.
-                from client.envs.dk1_ee import DK1EEConverter
+                # DK1 EE action space (expo_ft/env/dk1_ee.py): same conversion as the LeRobot export.
+                from expo_ft.env.dk1_ee import DK1EE
 
-                conv = DK1EEConverter()
+                conv = DK1EE()
                 joints = np.asarray(ep_obs["state"], dtype=np.float64)
                 ep_actions = np.stack([conv.action(ep_actions[t], joints[t]) for t in range(len(ep_actions))])
                 ep_obs["state"] = np.stack([conv.state(q) for q in joints])

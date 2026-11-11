@@ -8,10 +8,15 @@ MAX_EPISODES="${MAX_EPISODES:-20}"
 TASK_CONFIG="${TASK_CONFIG:-configs/task/dk1_task.py}"
 DATA_DIR="${DATA_DIR:-./data/stack_green_blue/success}"
 REPO_NAME="${REPO_NAME:-expo_ft/dk1_task_${MAX_EPISODES}}"
+# joint (absolute joint targets) or ee (DROID-style EE velocities, expo_ft/env/dk1_ee.py), e.g.
+#   ACTION_SPACE=ee MAX_EPISODES=50 TASK_CONFIG=configs/task/dk1_pick.py DATA_DIR=./data/dk1_pnp_bowl_new/success \
+#   REPO_NAME=expo_ft/dk1_pnp_bowl_new_ee_50 bash scripts/dk1_task/convert_data.sh
+ACTION_SPACE="${ACTION_SPACE:-joint}"
 
 uv run scripts/convert_dk1_data_to_lerobot.py \
     --data_dir="$DATA_DIR" \
     --repo_name="$REPO_NAME" \
     --task_config="$TASK_CONFIG" \
     --max_episodes="$MAX_EPISODES" \
+    --action_space="$ACTION_SPACE" \
     --no-push-to-hub

@@ -74,6 +74,13 @@ def save_state(
         norm_stats = data_config.norm_stats
         if norm_stats is not None and data_config.asset_id is not None:
             _normalize.save(directory / data_config.asset_id, norm_stats)
+        # DK1 joint/EE action space recorded by the converter (expo_ft/utils/action_space.py).
+        from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
+
+        src = epath.Path(HF_LEROBOT_HOME) / str(data_config.repo_id) / "meta" / "action_space.json"
+        if src.exists() and data_config.asset_id is not None:
+            (directory / data_config.asset_id).mkdir(parents=True, exist_ok=True)
+            (directory / data_config.asset_id / "action_space.json").write_text(src.read_text())
 
     # Split params that can be used for inference into a separate item.
     with at.disable_typechecking():

@@ -14,6 +14,8 @@ from absl import app, flags
 
 from ml_collections import config_flags
 
+from expo_ft.utils import action_space as _action_space
+
 import jax
 import etils.epath as epath
 
@@ -157,6 +159,9 @@ def main(_):
     init_wandb(checkpoint_dir_path, resuming, FLAGS.project_name, FLAGS.run_name)
     wandb.config.update(FLAGS.flag_values_dict(), allow_val_change=resuming)
 
+    # Joint or EE actions: recorded in the SFT checkpoint, not chosen by the task config.
+    action_space = _action_space.resolve(FLAGS.config, FLAGS.config_task)
+
     if FLAGS.config_task.env_type in ("droid", "dk1"):
         dataset = process_droid_dataset(
             FLAGS.dataset_path,
@@ -273,6 +278,7 @@ def main(_):
     logging.info("Creating environment...")
     env = EnvClientWrapper(
         env_creation_request=train_env_creation_request,
+        action_space=action_space,
         host=FLAGS.client_host,
         port=FLAGS.client_port
     )

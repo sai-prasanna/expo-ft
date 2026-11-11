@@ -14,6 +14,8 @@ import numpy as np
 from absl import app, flags
 from ml_collections import config_flags
 
+from expo_ft.utils import action_space as _action_space
+
 from expo_ft.agents import initialize_checkpoint_dir
 from expo_ft.data.replay_buffer import create_replay_buffer, _critic_key_to_storage
 from expo_ft.env.env_client import EnvClientWrapper
@@ -73,6 +75,9 @@ def main(_):
 
     if not FLAGS.dataset_path:
         raise ValueError("--dataset_path is required.")
+
+    # Joint or EE actions: recorded in the SFT checkpoint, not chosen by the task config.
+    action_space = _action_space.resolve(config, config_task)
 
     checkpoint_manager = None
     checkpoint_steps = ()
@@ -227,6 +232,7 @@ def main(_):
     logger.info("Listening for rollout client on %s:%s ...", FLAGS.client_host, FLAGS.client_port)
     env = EnvClientWrapper(
         env_creation_request=eval_env_creation_request,
+        action_space=action_space,
         host=FLAGS.client_host,
         port=FLAGS.client_port,
     )
