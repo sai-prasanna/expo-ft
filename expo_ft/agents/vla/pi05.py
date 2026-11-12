@@ -393,10 +393,14 @@ def build_pi05(config, seed, mesh, data_sharding, replicated_sharding,
         freeze_pi05_encoder=freeze_encoder,
         infer_device=jax.devices()[0],
     )
-    if resume:
-        target_actor_params = actor.get_params(actor_train_state)
-    else:
-        target_actor_params = actor.init_target_params(target_rng, resume=resume)
+    # No target actor: no learner ever reads it (sampling and all losses use actor_train_state);
+    # it was only Polyak-updated and checkpointed, at the cost of a second ~6 GB pi0.5 copy.
+    # Kept in the return value / agent field as None so call sites and agent classes stay as they are.
+    target_actor_params = None
+    # if resume:
+    #     target_actor_params = actor.get_params(actor_train_state)
+    # else:
+    #     target_actor_params = actor.init_target_params(target_rng, resume=resume)
 
     metadata = dict(
         action_horizon=pi05_train_config.model.action_horizon,

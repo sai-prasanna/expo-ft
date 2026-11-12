@@ -762,12 +762,12 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
         with _sharding.set_mesh(self.actor.mesh):
             new_train_state, info = self.actor.train_step(key, self.actor_train_state, actor_batch)
 
-        new_train_state_params = self.actor.get_params(new_train_state)
-        target_score_params = optax.incremental_update(
-            new_train_state_params, self.target_actor_params, self.actor_tau
-        )
-
-        new_agent = self.replace(actor_train_state=new_train_state, target_actor_params=target_score_params, rng=rng)
+        # Target actor disabled (see build_pi05): nothing reads it.
+        # new_train_state_params = self.actor.get_params(new_train_state)
+        # target_score_params = optax.incremental_update(
+        #     new_train_state_params, self.target_actor_params, self.actor_tau
+        # )
+        new_agent = self.replace(actor_train_state=new_train_state, rng=rng)
         
         return new_agent, info
 
@@ -882,11 +882,18 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
         return self.replace(critic=critic, target_critic=target_critic, batch_encoder=batch_encoder, rng=rng), info
 
 
-    def update(self, agent, batch: DatasetDict, utd_ratio: int, actor_batch: DatasetDict = None):
+    def update(self, agent, batch: DatasetDict, utd_ratio: int, actor_batch: DatasetDict = None,
+               donate: bool = False):
         # Drop stale inference copies before JIT; rebuild after so rollouts use new weights.
-        new_agent, info = self.replace(_infer_cache=None)._update_jit(
-            agent.replace(_infer_cache=None), batch, utd_ratio, actor_batch
-        )
+        if donate:
+            # Same computation, but the new agent state reuses the old one's GPU buffers (~one agent
+            # state less at peak). The old `agent` (and its inference cache) is unusable afterwards:
+            # only for callers that never touch it again, e.g. the sync loop in train_pi_robo.py.
+            new_agent, info = _update_donated(agent.replace(_infer_cache=None), batch, utd_ratio, actor_batch)
+        else:
+            new_agent, info = self.replace(_infer_cache=None)._update_jit(
+                agent.replace(_infer_cache=None), batch, utd_ratio, actor_batch
+            )
         return new_agent.cache_infer_params(), info
 
 
@@ -957,3 +964,12 @@ class EXPOLearner(AgentLearner, struct.PyTreeNode):
 
         critic_info = jax.tree_util.tree_map(lambda x: x[-1], critic_infos)
         return new_agent, {**actor_info, **critic_info}
+
+
+def _update_donated_impl(agent, batch, utd_ratio, actor_batch):
+    # The un-jitted body of EXPOLearner._update_jit, with the agent as both self and agent (as
+    # every caller of update() passes it), traced once so it can be donated.
+    return EXPOLearner._update_jit.__wrapped__(agent, agent, batch, utd_ratio, actor_batch)
+
+
+_update_donated = jax.jit(_update_donated_impl, static_argnums=2, donate_argnums=0)

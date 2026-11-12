@@ -1008,12 +1008,12 @@ class RealTimeEXPOFTLearner(AgentLearner, struct.PyTreeNode):
             else:
                 new_train_state, info = self.actor.train_step(key, self.actor_train_state, actor_batch)
 
-        new_train_state_params = self.actor.get_params(new_train_state)
-        target_score_params = optax.incremental_update(
-            new_train_state_params, self.target_actor_params, self.actor_tau
-        )
-
-        new_agent = self.replace(actor_train_state=new_train_state, target_actor_params=target_score_params, rng=rng)
+        # Target actor disabled (see build_pi05): nothing reads it.
+        # new_train_state_params = self.actor.get_params(new_train_state)
+        # target_score_params = optax.incremental_update(
+        #     new_train_state_params, self.target_actor_params, self.actor_tau
+        # )
+        new_agent = self.replace(actor_train_state=new_train_state, rng=rng)
         
         return new_agent, info
 

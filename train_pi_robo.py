@@ -338,7 +338,10 @@ def main(_):
             metrics["batch_info"] = get_batch_info(batch)
             agent = agent.replace(rng=jax.device_put(agent.rng, replicated_sharding))
             old_arrays = _agent_arrays(agent)
-            agent, update_info = agent.update(agent, batch, FLAGS.utd_ratio, actor_batch)
+            # donate (EXPOLearner only): the old agent is never used again here (_free_superseded
+            # skips donated buffers; checkpoint saves finish before the next update).
+            donate = {"donate": True} if model_cls == "EXPOLearner" else {}
+            agent, update_info = agent.update(agent, batch, FLAGS.utd_ratio, actor_batch, **donate)
             _free_superseded(old_arrays, agent)
             del old_arrays
             training_log.record_update_time(time.time() - update_start, metrics)

@@ -207,9 +207,10 @@ class BCLearner(AgentLearner, struct.PyTreeNode):
         key, rng = jax.random.split(rng, 2)
         with _sharding.set_mesh(self.actor.mesh):
             new_train_state, info = self.actor.train_step(key, self.actor_train_state, actor_batch)
-        new_train_state_params = self.actor.get_params(new_train_state)
-        target_actor_params = optax.incremental_update(new_train_state_params, self.target_actor_params, self.actor_tau)
-        new_agent = self.replace(actor_train_state=new_train_state, target_actor_params=target_actor_params, rng=rng)
+        # Target actor disabled (see build_pi05): nothing reads it.
+        # new_train_state_params = self.actor.get_params(new_train_state)
+        # target_actor_params = optax.incremental_update(new_train_state_params, self.target_actor_params, self.actor_tau)
+        new_agent = self.replace(actor_train_state=new_train_state, rng=rng)
         return new_agent, info
 
     def update(self, agent, batch: DatasetDict, utd_ratio: int, actor_batch: DatasetDict = None):
