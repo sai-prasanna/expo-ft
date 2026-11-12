@@ -53,6 +53,9 @@ flags.DEFINE_integer(
     "asynchronously because it has no pre-cache phase.",
 )
 flags.DEFINE_boolean("only_base_actions", False, "Use only base (OpenPI) actions, no edit, sample 1.")
+flags.DEFINE_boolean("untrained_full", False,
+                     "Without an RL checkpoint, still run the full EXPO selection with the freshly initialised "
+                     "critic + edit actor (= what the first RL training rollouts execute). Off: base actions only.")
 flags.DEFINE_float("sim_latency", 0.0, "Simulated extra inference latency in ms added to each sample_actions call; 0 disables.")
 flags.DEFINE_boolean("save_video", True, "Save evaluation videos.")
 flags.DEFINE_integer("fsdp_devices", 1, "Number of FSDP devices (match training).")
@@ -102,6 +105,9 @@ def main(_):
         if step not in checkpoint_steps:
             raise ValueError(f"Step {step} not in checkpoint steps {checkpoint_steps}")
         logger.info("Will load checkpoint at step %s", step)
+    elif FLAGS.untrained_full and not FLAGS.only_base_actions:
+        logger.warning("--untrained_full: untrained critic + edit actor (N=%d, n_edit_samples=%d, edit_scale=%s), "
+                       "like the first RL rollouts.", config.N, config.n_edit_samples, config.edit_scale)
     elif not FLAGS.only_base_actions:
         # No RL checkpoint: the critic and edit actor would be freshly (randomly) initialised, so
         # "full" mode would execute random edits picked by a random Q (made the DK1 arms thrash).
@@ -221,7 +227,8 @@ def main(_):
             eval_root = os.path.join(run_dir, "evals", weight_step)
         else:
             eval_root = "./eval_droid_policy/evals"
-        parts = ["only_base" if FLAGS.only_base_actions else "full", f"delay{FLAGS.delay}"]
+        mode = "only_base" if FLAGS.only_base_actions else ("full_untrained" if step == 0 else "full")
+        parts = [mode, f"delay{FLAGS.delay}"]
         video_dir = os.path.join(eval_root, "_".join(parts))
         os.makedirs(video_dir, exist_ok=True)
         logger.info("Saving evaluation videos to %s", video_dir)
