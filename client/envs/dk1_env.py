@@ -368,6 +368,7 @@ class DK1Env:
         command_interp_hz: float = 0.0,
         rest_joints=None,
         intervention: dict | None = None,
+        layout_guide: dict | None = None,
         mock: bool = False,
         video_dir: str | None = None,
         env_usage: str = "train",
@@ -409,11 +410,21 @@ class DK1Env:
         self.prev_obs = None
         oc = dict(self.intervention_cfg.get("leader_outcome") or {})
         self._leader_outcome = None
-        if (oc.pop("enabled", True) and self._intervention_device == "gello"
-                and self.intervention_cfg.get("enabled", True)):
+        if oc.pop("enabled", True) and self._intervention_device == "gello" and env_usage in ("train", "eval"):
+            # RL / eval only (collecting, the leader grippers grasp). Also without interventions: the
+            # leaders are then connected only for this gesture.
             self._leader_outcome = LeaderGripperOutcome(**oc)
         self._outcome_epoch = None
         self.done, self.success = False, False
+        # Scene-reset guide (client/teleop/layout_guide.py): head-camera markers for where to put the
+        # objects, seeded generated layouts (separate "eval" / "train" streams).
+        lg = dict(layout_guide or {})
+        self._layout_guide = None
+        self._layout_recorded = True
+        if lg.get("path"):
+            from client.teleop.layout_guide import LayoutGuide
+            self._layout_guide = LayoutGuide(lg["path"], mode=lg.get("mode", "eval"), seed=lg.get("seed", 0),
+                                             tol_px=lg.get("tol_px", 6.0), show=not self.mock)
 
         cameras = dict(cameras or {})
         self.camera_names = list(cameras) or list(IMAGE_KEYS)
@@ -444,6 +455,20 @@ class DK1Env:
         # and so the ~15 s connect doesn't freeze the arms in the middle of episode 1.
         if env_usage in ("train", "eval") and self.intervention_cfg.get("enabled", True) and not self.mock:
             self._ensure_intervention()
+        elif env_usage in ("train", "eval") and self.wait_for_scene_reset:
+            # No interventions: the foot pedal is still the "scene is reset, start" clicker.
+            from client.teleop.pedal import DEFAULT_PEDAL_NAME, Pedal
+            try:
+                self._pedal = Pedal(self.intervention_cfg.get("pedal_name", DEFAULT_PEDAL_NAME), clicker=True)
+            except Exception as e:
+                print(f"[DK1Env] foot pedal not available ({e!r}); start episodes with Enter.", flush=True)
+            if self._leader_outcome is not None:
+                try:  # connect now, not mid-episode 1
+                    self.get_leaders()
+                except Exception as e:
+                    print(f"[DK1Env] leader arms not available ({e!r}); label outcomes with 1 / 2 + Enter.",
+                          flush=True)
+                    self._leader_outcome = None
 
     # ------------------------------------------------------------------ observation
     def get_state(self) -> np.ndarray:
@@ -521,19 +546,26 @@ class DK1Env:
         if not self.mock:
             time.sleep(self.reset_settle_s)
 
-    def _wait_for_enter(self, msg: str, pedal_ok: bool = False):
+    def _wait_for_enter(self, msg: str, pedal_ok: bool = False, tick=None):
         """Block until Enter on the terminal, or (pedal_ok and a real foot pedal is connected) a
-        pedal click (press + release)."""
+        pedal click (press + release). `tick()` is called ~20x/s while waiting (layout guide)."""
         pedal = self._pedal if pedal_ok and self._pedal is not None and self._pedal._thread is not None else None
-        if pedal is not None:
-            print(msg.replace("press Enter", "click the foot pedal (or press Enter)"), flush=True)
+        if pedal is not None or tick is not None:
+            print(msg.replace("press Enter", "click the foot pedal (or press Enter)") if pedal is not None else msg,
+                  flush=True)
             try:
                 tty = open("/dev/tty", "r")
             except OSError:
                 tty = sys.stdin
             try:
-                clicks0 = pedal.clicks()
-                while pedal.clicks() == clicks0:
+                clicks0 = pedal.clicks() if pedal is not None else 0
+                while pedal is None or pedal.clicks() == clicks0:
+                    if tick is not None:
+                        try:
+                            tick()
+                        except Exception as e:
+                            print(f"[DK1Env] layout guide error ({e!r}); continuing without it.", flush=True)
+                            tick = None
                     if select.select([tty], [], [], 0.05)[0]:
                         tty.readline()
                         break
@@ -542,7 +574,8 @@ class DK1Env:
             finally:
                 if tty is not sys.stdin:
                     tty.close()
-            self._release_intervention()  # the click engaged the pedal; never start in human control
+            if pedal is not None:
+                self._release_intervention()  # the click engaged the pedal; never start in human control
             return
         print(msg, flush=True)
         try:
@@ -566,8 +599,16 @@ class DK1Env:
             target = self.reset_joints.copy()
             target[6] = target[13] = 0.0  # open grippers
             self._move_to(target)
+        guide = self._layout_guide
+        if guide is not None:
+            guide.begin()
         if self.wait_for_scene_reset:
-            self._wait_for_enter("[DK1Env] Reset the scene, then press Enter to start the episode.", pedal_ok=True)
+            tick = None if guide is None else (lambda: guide.tick(np.asarray(self._cams.read()["head"])))
+            self._wait_for_enter("[DK1Env] Reset the scene, then press Enter to start the episode.", pedal_ok=True,
+                                 tick=tick)
+        if guide is not None:
+            guide.end()
+            self._layout_recorded = False
         self._steps_since_reset = 0
         self._held_streak = 0
         self.safety_held_last = False
@@ -591,15 +632,16 @@ class DK1Env:
 
     def _poll_leader_outcome(self) -> str | None:
         """Leader-gripper outcome gesture; only while the pedal is up. -> "success" | "failure" | None."""
-        if self._leader_outcome is None or self._pedal is None:
+        if self._leader_outcome is None:
             return None
-        engaged, epoch = self._pedal.state()
-        if engaged or epoch != self._outcome_epoch:
-            # human control (or a takeover since the last poll): re-arm from scratch after release
-            self._outcome_epoch = epoch
-            self._leader_outcome.disarm()
-            if engaged:
-                return None
+        if self._pedal is not None:
+            engaged, epoch = self._pedal.state()
+            if engaged or epoch != self._outcome_epoch:
+                # human control (or a takeover since the last poll): re-arm from scratch after release
+                self._outcome_epoch = epoch
+                self._leader_outcome.disarm()
+                if engaged:
+                    return None
         try:
             leader = self.get_leaders().get()
         except Exception as e:
@@ -679,6 +721,10 @@ class DK1Env:
                 success = self._ask_outcome()
         if done:
             print(f"Done! Success: {success}, Time stop: {time_stop}, Manual stop: {manual_stop}")
+            if self._layout_guide is not None and not self._layout_recorded:
+                self._layout_recorded = True
+                outcome = "success" if success else ("safety_stop" if self.safety_stopped else "failure")
+                self._layout_guide.record(outcome, self._steps_since_reset)
         self.done, self.success = done, success
         reward = 1.0 if success else 0.0
         mask = 0.0 if done else 1.0

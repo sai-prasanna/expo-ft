@@ -8,4 +8,6 @@ def get_config():
     config.max_joint_delta_per_step = 0.2
     config.max_command_delta_per_step = 0.1
     config.intervention.enabled = False
+    config.layout_guide.path = "configs/task/layouts/dk1_pick.json"
+    config.layout_guide.mode = "train"
     return config

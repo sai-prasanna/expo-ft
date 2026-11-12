@@ -70,6 +70,9 @@ def get_config():
     config.reset_joints = np.asarray(reset, dtype=np.float64)
     config.reset_max_joint_speed = 0.5  # rad/s while homing (~29 deg/s for the joint with the farthest to go); was 0.3
     config.wait_for_scene_reset = True  # press Enter after the manual scene reset
+    # Live head-camera scene-reset guide (client/teleop/layout_guide.py); path "" = off.
+    # Layouts generated with `seed` from the demo starts in `path`; mode "eval" / "train" = separate streams.
+    config.layout_guide = ml_collections.ConfigDict({"path": "", "mode": "eval", "seed": 0, "tol_px": 6.0})
 
     # ---- observation / control ----------------------------------------------------------
     config.image_size = (240, 320)  # 4:3 to match the 640x480 cameras (no padding); the model pads to 224x224
