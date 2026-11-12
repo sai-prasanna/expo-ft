@@ -297,6 +297,67 @@ class _RealCameras:
                 pass
 
 
+class _EpisodeRecorder:
+    """Every DK1 episode -> <dir>/<time>_<usage>_ep<n>[_<layout>].mp4 (head | left wrist | right wrist at the
+    policy's image size, control_hz) + .npz (per-frame 14-D state, time), renamed with the outcome
+    (_success / _failure / _safety_stop) when the episode ends. Never breaks an episode: on any error
+    it prints once and stops recording."""
+
+    def __init__(self, fps: float):
+        self.fps = int(round(fps))
+        self._writer = None
+        self._path = None
+        self._states, self._times = [], []
+        self._broken = False
+        self.episodes = 0
+
+    def start(self, out_dir: str, stem: str):
+        self.finish("unfinished")
+        if self._broken:
+            return
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except OSError:  # e.g. a cluster path from a remote learner: keep it local
+            out_dir = os.path.join("logs", "videos")
+            os.makedirs(out_dir, exist_ok=True)
+        self.episodes += 1
+        self._path = os.path.join(out_dir, stem.format(n=self.episodes))
+        self._states, self._times = [], []
+
+    def add(self, obs: dict):
+        if self._path is None or self._broken:
+            return
+        try:
+            frame = np.concatenate([np.asarray(obs[k]) for k in IMAGE_KEYS.values()], axis=1)
+            if self._writer is None:
+                import imageio
+                self._writer = imageio.get_writer(
+                    self._path + ".mp4", fps=self.fps, format="ffmpeg", codec="libx264",
+                    output_params=["-preset", "ultrafast", "-crf", "23"])
+            self._writer.append_data(frame)
+            self._states.append(np.asarray(obs["state"], dtype=np.float32))
+            self._times.append(time.time())
+        except Exception as e:
+            print(f"[DK1Env] episode video disabled ({e!r})", flush=True)
+            self._broken = True
+            self._path = None
+
+    def finish(self, outcome: str):
+        if self._path is None:
+            return
+        path, self._path = self._path, None
+        try:
+            if self._writer is not None:
+                self._writer.close()
+                self._writer = None
+                np.savez(path + ".npz", state=np.asarray(self._states), t=np.asarray(self._times))
+                for ext in (".mp4", ".npz"):
+                    os.replace(path + ext, f"{path}_{outcome}{ext}")
+                print(f"[DK1Env] episode video: {path}_{outcome}.mp4", flush=True)
+        except Exception as e:
+            print(f"[DK1Env] could not finish episode video ({e!r})", flush=True)
+
+
 class LeaderGripperOutcome:
     """Episode outcome from the leader grippers while the pedal is UP (the leaders are idle then).
 
@@ -418,6 +479,9 @@ class DK1Env:
         self.done, self.success = False, False
         # Scene-reset guide (client/teleop/layout_guide.py): head-camera markers for where to put the
         # objects, seeded generated layouts (separate "eval" / "train" streams).
+        # Every episode is recorded (not in mock): to video_dir (the server's eval / train_videos
+        # folder) or logs/videos.
+        self._recorder = None if self.mock else _EpisodeRecorder(self.control_hz)
         lg = dict(layout_guide or {})
         self._layout_guide = None
         self._layout_recorded = True
@@ -485,6 +549,8 @@ class DK1Env:
             obs[key] = process_image_for_obs(np.asarray(raw["images"][cam]), bgr_to_rgb=False, image_size=self.image_size)
         obs["state"] = np.asarray(raw["state"], dtype=np.float32)
         obs["prompt"] = self.language_instruction
+        if self._recorder is not None:
+            self._recorder.add(obs)
         return obs
 
     def get_observation(self) -> dict:
@@ -609,6 +675,10 @@ class DK1Env:
         if guide is not None:
             guide.end()
             self._layout_recorded = False
+        if self._recorder is not None:
+            lay = guide.current["id"] if guide is not None and guide.current else ""
+            stem = "_".join(x for x in (time.strftime("%Y%m%d-%H%M%S"), self.env_usage, "ep{n:03d}", lay) if x)
+            self._recorder.start(self.video_dir or os.path.join("logs", "videos"), stem)
         self._steps_since_reset = 0
         self._held_streak = 0
         self.safety_held_last = False
@@ -721,6 +791,8 @@ class DK1Env:
                 success = self._ask_outcome()
         if done:
             print(f"Done! Success: {success}, Time stop: {time_stop}, Manual stop: {manual_stop}")
+            if self._recorder is not None:
+                self._recorder.finish("success" if success else ("safety_stop" if self.safety_stopped else "failure"))
             if self._layout_guide is not None and not self._layout_recorded:
                 self._layout_recorded = True
                 outcome = "success" if success else ("safety_stop" if self.safety_stopped else "failure")
@@ -860,6 +932,8 @@ class DK1Env:
         if self._closed:
             return
         self._closed = True
+        if self._recorder is not None:
+            self._recorder.finish("unfinished")
         if park:
             self.park()
         for obj in (self._intervention, self._pedal, self._leaders, self._cams, self._arms):
