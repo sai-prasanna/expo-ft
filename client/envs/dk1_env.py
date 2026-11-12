@@ -831,11 +831,21 @@ class DK1Env:
                 time_stop = False
             done = bool(success or terminate or time_stop or self.safety_stopped)
             if time_stop and not success and not self.mock:
-                success = self._ask_outcome()
+                if self._detector is not None and self._detector_mode == "auto":
+                    # The detector decides at the step limit (no prompt: a wrong squeeze there once
+                    # rewarded a cube held in the air). Successes it can't see (cube hidden) need a
+                    # manual SUCCESS label before the limit.
+                    success = self._detector.finalize()
+                    print(f"[DK1Env] Step limit: success detector -> {'SUCCESS' if success else 'FAILURE'} "
+                          f"(label manually before the limit to override).", flush=True)
+                else:
+                    success = self._ask_outcome()
         if done:
             print(f"Done! Success: {success}, Time stop: {time_stop}, Manual stop: {manual_stop}")
             outcome = "success" if success else ("safety_stop" if self.safety_stopped else "failure")
             if self._detector is not None and self._detector.step > 0:
+                if time_stop:
+                    self._detector.finalize()
                 self._log_detector(outcome)
                 self._detector.step = 0  # log once per episode
             if self._recorder is not None:

@@ -6,7 +6,7 @@ head image AND both grippers are open (cube released), for `k` consecutive steps
 Checked offline on the 50 dk1_pnp_bowl_new demos (2026-11-12): fired in 50/50, never before the
 release, 9-63 steps after it. The release condition matters: in 14 demos the held cube is "in the
 bowl" in the image while it is carried over it. Not yet checked on failures (cube next to / behind
-the bowl in the image); hence DK1Env's mode "log" first.
+the bowl in the image). At the step limit, finalize() also accepts a success held >= 3 steps.
 """
 
 from __future__ import annotations
@@ -54,4 +54,11 @@ class CubeInBowlDetector:
         if self.run >= self.k and self.fired_step is None:
             self.fired_step = self.step
         self.step += 1
+        return self.fired_step is not None
+
+    def finalize(self, min_run: int = 3) -> bool:
+        """At the step limit the k-step window may be cut short (a drop in the last steps): count
+        a success that has held for >= min_run steps. Idempotent. -> success."""
+        if self.fired_step is None and self.run >= min_run:
+            self.fired_step = self.step - 1
         return self.fired_step is not None
