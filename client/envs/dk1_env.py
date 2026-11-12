@@ -430,6 +430,7 @@ class DK1Env:
         rest_joints=None,
         intervention: dict | None = None,
         layout_guide: dict | None = None,
+        success_detector: dict | None = None,
         mock: bool = False,
         video_dir: str | None = None,
         env_usage: str = "train",
@@ -482,6 +483,15 @@ class DK1Env:
         # Every episode is recorded (not in mock): to video_dir (the server's eval / train_videos
         # folder) or logs/videos.
         self._recorder = None if self.mock else _EpisodeRecorder(self.control_hz)
+        # Automatic success detector (type "cube_in_bowl": client/envs/cube_in_bowl.py). mode "log":
+        # only reports what it would decide next to the operator's label (logs/success_detector.csv);
+        # mode "auto": its decision ends the episode as a success (manual labels still win).
+        sd = dict(success_detector or {})
+        self._detector, self._detector_mode = None, sd.pop("mode", "log")
+        if sd.pop("type", "") == "cube_in_bowl" and env_usage in ("train", "eval"):
+            from client.envs.cube_in_bowl import CubeInBowlDetector
+            self._detector = CubeInBowlDetector(**sd)
+            print(f"[DK1Env] success detector cube_in_bowl, mode {self._detector_mode}", flush=True)
         lg = dict(layout_guide or {})
         self._layout_guide = None
         self._layout_recorded = True
@@ -675,6 +685,8 @@ class DK1Env:
         if guide is not None:
             guide.end()
             self._layout_recorded = False
+        if self._detector is not None:
+            self._detector.reset()
         if self._recorder is not None:
             lay = guide.current["id"] if guide is not None and guide.current else ""
             stem = "_".join(x for x in (time.strftime("%Y%m%d-%H%M%S"), self.env_usage, "ep{n:03d}", lay) if x)
@@ -754,8 +766,39 @@ class DK1Env:
                 tty.close()
 
     def detect(self, raw_obs):
-        """Override for an automatic success detector: returns (success, terminate)."""
-        return False, False
+        """Automatic success detector (success_detector config): returns (success, terminate)."""
+        det = self._detector
+        if det is None or raw_obs is None:
+            return False, False
+        was = det.fired_step is not None
+        head = process_image_for_obs(np.asarray(raw_obs["images"]["head"]), bgr_to_rgb=False,
+                                     image_size=self.image_size)
+        fired = det.update(head, np.asarray(raw_obs["state"]))
+        if fired and not was:
+            print(f"[DK1Env] success detector: cube in bowl at step {det.fired_step}"
+                  + ("" if self._detector_mode == "auto" else " (log only; label the outcome as usual)"),
+                  flush=True)
+        return (fired, fired) if self._detector_mode == "auto" else (False, False)
+
+    def _log_detector(self, outcome: str):
+        det = self._detector
+        guide = self._layout_guide
+        lay = guide.current["id"] if guide is not None and guide.current else ""
+        verdict = "success" if det.fired_step is not None else "no_success"
+        agree = (verdict == "success") == (outcome == "success")
+        print(f"[DK1Env] success detector: {verdict} (step {det.fired_step}), label {outcome}"
+              + ("" if agree else "  <-- DISAGREE"), flush=True)
+        try:
+            path = os.path.join("logs", "success_detector.csv")
+            os.makedirs("logs", exist_ok=True)
+            new = not os.path.exists(path)
+            with open(path, "a") as f:
+                if new:
+                    f.write("time,usage,layout,steps,detector,fired_step,label,mode\n")
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')},{self.env_usage},{lay},{self._steps_since_reset},"
+                        f"{verdict},{'' if det.fired_step is None else det.fired_step},{outcome},{self._detector_mode}\n")
+        except OSError as e:
+            print(f"[DK1Env] could not write the detector log ({e!r})", flush=True)
 
     def auto_reset_due(self) -> bool:
         if self.ignore_auto_reset:
@@ -791,8 +834,12 @@ class DK1Env:
                 success = self._ask_outcome()
         if done:
             print(f"Done! Success: {success}, Time stop: {time_stop}, Manual stop: {manual_stop}")
+            outcome = "success" if success else ("safety_stop" if self.safety_stopped else "failure")
+            if self._detector is not None and self._detector.step > 0:
+                self._log_detector(outcome)
+                self._detector.step = 0  # log once per episode
             if self._recorder is not None:
-                self._recorder.finish("success" if success else ("safety_stop" if self.safety_stopped else "failure"))
+                self._recorder.finish(outcome)
             if self._layout_guide is not None and not self._layout_recorded:
                 self._layout_recorded = True
                 outcome = "success" if success else ("safety_stop" if self.safety_stopped else "failure")

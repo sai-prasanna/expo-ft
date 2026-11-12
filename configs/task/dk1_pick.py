@@ -22,4 +22,7 @@ def get_config():
     config.auto_reset_steps = 300  # 20 s; expect demos of ~8-12 s
     # Cartesian safety held the arms this many steps in a row -> end as a "safety stop" (2 s).
     config.safety_stop_steps = 30
+    # Cube in bowl from the head camera + both grippers open (client/envs/cube_in_bowl.py). "log" until
+    # it agrees with the operator's labels on real failures, then "auto".
+    config.success_detector.type = "cube_in_bowl"
     return config

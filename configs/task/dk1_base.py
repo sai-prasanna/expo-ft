@@ -73,6 +73,9 @@ def get_config():
     # Live head-camera scene-reset guide (client/teleop/layout_guide.py); path "" = off.
     # Layouts generated with `seed` from the demo starts in `path`; mode "eval" / "train" = separate streams.
     config.layout_guide = ml_collections.ConfigDict({"path": "", "mode": "eval", "seed": 0, "tol_px": 6.0})
+    # Automatic success detector (DK1Env.detect); type "" = off. mode "log" = report only, "auto" = ends
+    # the episode as success. Params pass through (cube_in_bowl: frac, open_thresh, k).
+    config.success_detector = ml_collections.ConfigDict({"type": "", "mode": "log"})
 
     # ---- observation / control ----------------------------------------------------------
     config.image_size = (240, 320)  # 4:3 to match the 640x480 cameras (no padding); the model pads to 224x224
