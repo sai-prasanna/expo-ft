@@ -8,10 +8,17 @@ the same quantity for the human demos.
 
   .venv/bin/python scripts/dk1_task/check_policy_offline.py \
       --ckpt checkpoints/expo_pi05_dk1_lora_finetune_sft/dk1_task_20_lora_sft/4000
+
+ee_cmd checkpoints (action_space.json in the checkpoint assets): the policy gets the EE state the
+server would build, and each predicted chunk is turned into joint commands exactly as the server
+does (anchored on the demo's previous command at the chunk start, then on its own commands), so
+all numbers stay in radians and compare directly with a joint checkpoint.
 """
 
 import argparse
 import dataclasses
+import glob
+import json
 import os
 
 import h5py
@@ -40,6 +47,14 @@ def main():
         cfg.data, repo_id=args.repo_id,
         assets=dataclasses.replace(cfg.data.assets, asset_id=args.repo_id)))
     policy = policy_config.create_trained_policy(cfg, args.ckpt)
+    files = glob.glob(os.path.join(args.ckpt, "assets", "*", "*", "action_space.json"))
+    space = json.load(open(files[0]))["action_space"] if files else "joint"
+    ee = None
+    if space == "ee_cmd":
+        from expo_ft.env.dk1_ee import DK1EE
+
+        ee = DK1EE()
+    print(f"action space: {space}")
 
     errs, jumps_pol, steps_pol = [], [], []
     for ep in args.episodes:
@@ -47,18 +62,27 @@ def main():
             so = f["saved_observation"]
             T = so["state"].shape[0]
             act = f["action"]["action14"][:]
+            q = so["state"][:].astype(np.float64)
+            if ee is not None:
+                ee_states, _ = ee.episode(q, act)
             for t in range(0, T - args.replan, args.stride):
                 prompt = so["prompt"][t]
                 obs = {
                     "head_image": so["head_image"][t],
                     "left_wrist_image": so["left_wrist_image"][t],
                     "right_wrist_image": so["right_wrist_image"][t],
-                    "state": so["state"][t].astype(np.float32),
+                    "state": (ee_states[t] if ee is not None else so["state"][t]).astype(np.float32),
                     "prompt": prompt.decode() if isinstance(prompt, bytes) else str(prompt),
                 }
                 chunk = np.asarray(policy.infer(obs)["actions"])[: args.replan]
+                if ee is not None:  # EE steps -> joint commands, as EnvClientWrapper does
+                    anchor, joints = (act[t - 1] if t else q[0]).astype(np.float64), []
+                    for a in chunk:
+                        anchor = ee.joints(a, anchor)
+                        joints.append(anchor)
+                    chunk = np.stack(joints)
                 errs.append(np.abs(chunk - act[t : t + args.replan]))
-                jumps_pol.append(np.abs(chunk[0] - obs["state"]))
+                jumps_pol.append(np.abs(chunk[0] - q[t]))
                 steps_pol.append(np.abs(np.diff(chunk, axis=0)))
             demo_jump = np.abs(act - so["state"][:])
             demo_step = np.abs(np.diff(act, axis=0))

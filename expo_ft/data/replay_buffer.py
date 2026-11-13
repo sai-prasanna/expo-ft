@@ -436,7 +436,9 @@ class PiReplayBuffer(Dataset):
         return _take_rows(arr, indices, out=out)
 
     def sample_jax(self, batch_size: int, keys=None, data_sharding=None,
-                       hil_only: bool = False, success_only: bool = False):
+                       hil_only: bool = False, success_only: bool = False, indices=None):
+        """Random training batch; `indices` (diagnostics) builds the batch at those buffer
+        positions instead (batch_size is then len(indices))."""
         n_step = self._replan_steps  # critic reward window: one executed chunk
         assert len(self) >= n_step, "Replay buffer size must be greater than the sample window"
         if not hasattr(self, "rng"):
@@ -449,7 +451,11 @@ class PiReplayBuffer(Dataset):
 
         key, rng = jax.random.split(self.rng)
         max_start = len(self) - n_step
-        if hil_only:
+        if indices is not None:
+            indices = np.asarray(indices)
+            batch_size = len(indices)
+            rng = self.rng  # leave the training sampler's stream untouched
+        elif hil_only:
             eligible_indices = np.flatnonzero(self.dataset_dict["hil_chunk"][:max_start])
             if len(eligible_indices) == 0:
                 raise ValueError(
