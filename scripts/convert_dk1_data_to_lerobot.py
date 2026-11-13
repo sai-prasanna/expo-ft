@@ -8,8 +8,8 @@ Feature names equal the env observation keys (client/envs/dk1_env.py), which the
     state   : float32 (14,)
     actions : float32 (14,)   = action/<task_config.action_space> (the executed 14-D action)
 fps = task_config.control_hz.
-With --action_space=ee, state/actions are converted to the DROID-style EE space of
-expo_ft/env/dk1_ee.py instead: state (20,), actions (14,). The action space is recorded in
+With --action_space=ee_cmd, state/actions are converted to the EE space of expo_ft/env/dk1_ee.py
+instead (actions relative to the previous command): state (20,), actions (14,). The action space is recorded in
 meta/action_space.json, which training copies into the checkpoint. The task (prompt) of each episode is the prompt stored in its
 traj.hdf5 (collect_data_dk1.py --prompt), falling back to task_config.language_instruction.
 
@@ -74,11 +74,12 @@ def main(
     action_dim = 14
     state_dim = 14
     ee = None
-    if action_space == "ee":
+    assert action_space in ("joint", "ee_cmd"), action_space
+    if action_space == "ee_cmd":
         from expo_ft.env.dk1_ee import EE_STATE_DIM, DK1EE
 
         ee, state_dim = DK1EE(), EE_STATE_DIM
-        print("EE control: DROID-style per-arm cartesian velocity actions, 20-D EE state")
+        print("EE control: per-arm EE actions relative to the previous command, 20-D EE state")
 
     dataset = LeRobotDataset.create(
         repo_id=repo_name,
@@ -116,9 +117,7 @@ def main(
         if actions.ndim != 2 or actions.shape[1] != action_dim:
             raise ValueError(f"{path}: action/{action_key} has shape {actions.shape}, expected (T, 14)")
         if ee is not None:
-            joints = obs[STATE_KEY]
-            actions = np.stack([ee.action(actions[t], joints[t]) for t in range(len(actions))])
-            obs[STATE_KEY] = np.stack([ee.state(q) for q in joints])
+            obs[STATE_KEY], actions = ee.episode(obs[STATE_KEY], actions)
         for t in range(len(actions)):
             frame = {k: _resize(np.asarray(obs[k][t], dtype=np.uint8), hw) for k in IMAGE_KEYS}
             frame[STATE_KEY] = np.asarray(obs[STATE_KEY][t], dtype=np.float32)

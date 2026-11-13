@@ -71,10 +71,8 @@ def process_droid_dataset(
                 # DK1 EE action space (expo_ft/env/dk1_ee.py): same conversion as the LeRobot export.
                 from expo_ft.env.dk1_ee import DK1EE
 
-                conv = DK1EE()
                 joints = np.asarray(ep_obs["state"], dtype=np.float64)
-                ep_actions = np.stack([conv.action(ep_actions[t], joints[t]) for t in range(len(ep_actions))])
-                ep_obs["state"] = np.stack([conv.state(q) for q in joints])
+                ep_obs["state"], ep_actions = DK1EE().episode(joints, ep_actions)
                 ep_obs["joint_state"] = joints.astype(np.float32)
 
             T = len(ep_actions)

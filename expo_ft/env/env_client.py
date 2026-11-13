@@ -220,11 +220,11 @@ class EnvClient:
 class EnvClientWrapper:
     """Gym-like interface around EnvClient.
 
-    action_space="ee" (DK1, expo_ft/env/dk1_ee.py): the policy sees the 20-D EE state and acts in
-    EE velocities; this wrapper converts both ways, so the robot client stays joint-only.
-    Observations keep the joints in obs["joint_state"]. step() IKs from the joints of the latest
-    observation (what the training labels are relative to) and returns the executed (or human)
-    joint command converted back to an EE action.
+    action_space="ee_cmd" (DK1, expo_ft/env/dk1_ee.py): the policy sees the 20-D EE state and acts
+    in EE steps relative to the anchor = the last joint command the client executed (the measured
+    joints right after a reset); this wrapper converts both ways, so the robot client stays
+    joint-only. Observations keep the measured joints in obs["joint_state"]. step() returns the
+    executed (or human) joint command converted back to an EE action, then makes it the anchor.
     """
 
     def __init__(self, env_creation_request: dict, host: str = "0.0.0.0", port: int = 8102,
@@ -232,11 +232,12 @@ class EnvClientWrapper:
         """Initialize the wrapper. Binds host:port and waits for the rollout client
         to dial in (see EnvClient)."""
         self.ee = None
-        if action_space == "ee":
+        if action_space == "ee_cmd":
             from expo_ft.env.dk1_ee import DK1EE
 
             self.ee = DK1EE()
         self._joints = None  # measured joints of the latest observation (EE mode)
+        self._anchor = None  # last executed joint command (EE mode); None = use the measured joints
         self.host = host
         self.port = port
         self.client = EnvClient(host=host, port=port)
@@ -265,6 +266,7 @@ class EnvClientWrapper:
                     if op_name != "reset":
                         self.client.reset(self.env_id)
                     self.client.reset(self.env_id)
+                    self._anchor = None
                     time.sleep(60)
                     status = "normal"
                 except RuntimeError as e:
@@ -274,6 +276,7 @@ class EnvClientWrapper:
     def reset(self):
         """Reset the environment and return observation."""
         observation, _ = self._call("reset", lambda: self.client.reset(self.env_id))
+        self._anchor = None
         return self._to_ee_obs(observation)
 
     def step(self, action):
@@ -283,11 +286,13 @@ class EnvClientWrapper:
         action = np.asarray(action, dtype=np.float64).reshape(-1)[:14]
         if self._joints is None:
             self.get_observation()
-        current = self._joints
+        anchor = self._joints if self._anchor is None else self._anchor
         hold = np.allclose(action, -1.0)  # all -1: the client holds; not an EE action
-        joints = action if hold else self.ee.joints(action, current)
+        joints = action if hold else self.ee.joints(action, anchor)
         executed, action_type = self._call("step", lambda: self.client.step(self.env_id, joints.tolist()))
-        return self.ee.action(executed, current), action_type
+        executed = np.asarray(executed, dtype=np.float64).reshape(14)
+        self._anchor = executed
+        return self.ee.action(executed, anchor), action_type
 
     def get_observation(self):
         """Get the observation of the environment."""
@@ -299,7 +304,7 @@ class EnvClientWrapper:
         self._joints = np.asarray(obs["state"], dtype=np.float64)
         obs = dict(obs)
         obs["joint_state"] = self._joints.astype(np.float32)
-        obs["state"] = self.ee.state(self._joints)
+        obs["state"] = self.ee.state(self._joints if self._anchor is None else self._anchor, self._joints)
         return obs
 
     def get_info_for_step(self):

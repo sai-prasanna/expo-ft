@@ -1,21 +1,26 @@
-"""DROID-style end-effector action space for the DK1 (EXPO-FT "cartesian_velocity", per arm).
-
-Per arm, in that arm's base frame (FK of the DK1 follower URDF, `tool0` frame):
+"""End-effector action space for the DK1 ("ee_cmd"), per arm in that arm's base frame (FK of the
+DK1 follower URDF, `tool0` frame). Same layout as EXPO-FT's DROID "cartesian_velocity":
 
     action (7) = [dpos / MAX_LIN_DELTA, deuler_xyz / MAX_ROT_DELTA, gripper]
-        dpos   = p_target - p_current
-        deuler = (R_target * R_current^-1).as_euler("xyz")   (rotation delta in the base frame)
-        gripper: absolute 0 (open) .. 1 (closed), as in the joint action space
-    state  (10) = [pos(3), rot6d(6), gripper]
-        rot6d = first two columns of R (continuous; Euler wraps: the DK1 tool sits at roll ~ -pi)
-
+    state  (10) = [pos(3), rot6d(6), gripper]      rot6d = first two columns of R
     14-D action: [L(7), R(7)]       20-D state: [L(10), R(10)]
 
-Training data (converter, demo loader): target = FK(commanded joints c_t), current = FK(measured
-joints q_t) of the same step. Rollouts (EnvClientWrapper, server side): target = FK(q_t of the
-latest observation) (+) action, joints = IK(target, seed = q_t). The robot client only ever sees
-joint targets and applies its usual joint safety. Velocities are NOT norm-clipped as in DROID: the
-client's per-step joint cap is the safety limit.
+Every action is relative to the ANCHOR: the last joint command sent (at the first step of an
+episode: the measured joints). So an action is how far the commanded hand moves this step, and
+the arms' tracking lag never enters the labels.
+
+    training  (demos: measured q_t, executed command c_t):
+        anchor_t = c_{t-1}  (anchor_0 = q_0)
+        action_t = EE(c_t) (-) EE(anchor_t)      dpos = p_c - p_a, deuler = (R_c R_a^-1).as_euler("xyz")
+        state_t  = EE(anchor_t), gripper = measured
+    rollout  (EnvClientWrapper, server side):
+        joints = IK(EE(anchor) (+) action, seed = anchor);  the client applies its joint safety;
+        anchor <- the joint command the client executed (covers clipping, holds, interventions)
+
+gripper: absolute 0 (open) .. 1 (closed), as in the joint action space. Actions are not clipped
+(rotation labels exceed 1 on fast wrist turns); the client's per-step joint cap is the limit.
+Robot replay checks: scripts/dk1_task/ee_label_check/robot_replay.py (2026-11-13: matches joint
+replay; the old measured-anchored labels drifted 4 cm in 4 s on the same demo).
 """
 
 from __future__ import annotations
@@ -64,44 +69,54 @@ class DK1EE:
         p, q = self.kin.fk(q6)
         return p, _rot(q)
 
-    def state(self, joints14) -> np.ndarray:
-        """20-D EE state of the measured joints."""
-        joints14 = np.asarray(joints14, dtype=float).reshape(14)
+    def state(self, anchor14, measured14) -> np.ndarray:
+        """20-D EE state: pose of the anchor joints, measured grippers."""
+        anchor14 = np.asarray(anchor14, dtype=float).reshape(14)
+        measured14 = np.asarray(measured14, dtype=float).reshape(14)
         out = []
         for side in SIDES:
-            q = joints14[_jslice(side)]
-            p, r = self.pose(q[:6])
+            sl = _jslice(side)
+            p, r = self.pose(anchor14[sl][:6])
             m = r.as_matrix()
-            out.append(np.concatenate([p, m[:, 0], m[:, 1], [q[6]]]))
+            out.append(np.concatenate([p, m[:, 0], m[:, 1], [measured14[sl][6]]]))
         return np.concatenate(out).astype(np.float32)
 
-    def action(self, target14, current14) -> np.ndarray:
-        """EE action that moves the measured `current14` pose to the commanded `target14` pose."""
+    def action(self, target14, anchor14) -> np.ndarray:
+        """EE action that moves the anchor pose to the pose of the joint command `target14`."""
         target14 = np.asarray(target14, dtype=float).reshape(14)
-        current14 = np.asarray(current14, dtype=float).reshape(14)
+        anchor14 = np.asarray(anchor14, dtype=float).reshape(14)
         out = []
         for side in SIDES:
-            t, c = target14[_jslice(side)], current14[_jslice(side)]
+            t, a = target14[_jslice(side)], anchor14[_jslice(side)]
             pt, rt = self.pose(t[:6])
-            pc, rc = self.pose(c[:6])
-            dpos = (pt - pc) / MAX_LIN_DELTA
-            drot = (rt * rc.inv()).as_euler("xyz") / MAX_ROT_DELTA
+            pa, ra = self.pose(a[:6])
+            dpos = (pt - pa) / MAX_LIN_DELTA
+            drot = (rt * ra.inv()).as_euler("xyz") / MAX_ROT_DELTA
             out.append(np.concatenate([dpos, drot, [t[6]]]))
         return np.concatenate(out).astype(np.float32)
 
-    def joints(self, action14, current14) -> np.ndarray:
-        """14-D joint target of an EE action applied at the measured `current14` (IK)."""
+    def joints(self, action14, anchor14) -> np.ndarray:
+        """14-D joint command of an EE action applied to the anchor (IK seeded with the anchor)."""
         if self._ik is None:
             self._ik = self._make_ik()
         action14 = np.asarray(action14, dtype=float).reshape(14)
-        current14 = np.asarray(current14, dtype=float).reshape(14)
-        joints = current14.copy()
+        anchor14 = np.asarray(anchor14, dtype=float).reshape(14)
+        joints = anchor14.copy()
         for side in SIDES:
-            a, c = action14[_jslice(side)], current14[_jslice(side)]
-            pc, rc = self.pose(c[:6])
-            pt = pc + a[:3] * MAX_LIN_DELTA
-            rt = Rotation.from_euler("xyz", a[3:6] * MAX_ROT_DELTA) * rc
+            a, c = action14[_jslice(side)], anchor14[_jslice(side)]
+            pa, ra = self.pose(c[:6])
+            pt = pa + a[:3] * MAX_LIN_DELTA
+            rt = Rotation.from_euler("xyz", a[3:6] * MAX_ROT_DELTA) * ra
             sl = _jslice(side)
             joints[sl][:6] = self._ik[side].solve(pt, _wxyz(rt), seed=c[:6])
             joints[sl][6] = a[6]
         return joints
+
+    def episode(self, measured, commands) -> tuple[np.ndarray, np.ndarray]:
+        """Demo (measured q (T,14), executed commands c (T,14)) -> (states (T,20), actions (T,14))."""
+        measured = np.asarray(measured, dtype=float)
+        commands = np.asarray(commands, dtype=float)
+        anchors = np.concatenate([measured[:1], commands[:-1]])
+        states = np.stack([self.state(a, q) for a, q in zip(anchors, measured)])
+        actions = np.stack([self.action(c, a) for c, a in zip(commands, anchors)])
+        return states, actions

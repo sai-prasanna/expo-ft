@@ -54,6 +54,10 @@ flags.DEFINE_integer("max_steps", 500_000, "Number of training steps.")
 flags.DEFINE_integer("num_data", 0, "Max number of offline demo episodes to load (0 = all).")
 flags.DEFINE_boolean("tqdm", True, "Use tqdm progress bar.")
 flags.DEFINE_boolean("checkpoint_model", False, "Save agent checkpoint during training.")
+flags.DEFINE_string("diagnose_critic_out", "",
+                    "Instead of training: load the latest checkpoint + saved replay buffer of this run, "
+                    "write critic diagnostics (Q along episodes, Q vs return, candidate spread) to this "
+                    "directory and exit. Read-only; no robot client needed; stop the learner first (GPU).")
 flags.DEFINE_integer("checkpoint_interval", 0, "Save agent checkpoint every N steps. When 0 and checkpoint_model=True, no interval saving (save at end only).")
 flags.DEFINE_boolean("checkpoint_buffer", False, "Save agent replay buffer on evaluation.")
 flags.DEFINE_integer("utd_ratio", 20, "Update to data ratio.")
@@ -124,6 +128,8 @@ def _free_superseded(old_arrays, agent):
 
 def main(_):
     init_logging()
+    if FLAGS.diagnose_critic_out:
+        os.environ["WANDB_MODE"] = "disabled"  # read-only: don't append to the run's wandb log
     assert FLAGS.offline_ratio >= 0.0 and FLAGS.offline_ratio <= 1.0
 
     if FLAGS.batch_size % jax.device_count() != 0:
@@ -267,6 +273,13 @@ def main(_):
             start_step = latest_step
             logging.info("Resuming from step %d", start_step)
         batch_processor.restore(checkpoint_dir_path, up_to_step=latest_step)
+
+    if FLAGS.diagnose_critic_out:
+        if not resuming:
+            raise ValueError("--diagnose_critic_out needs an existing run to load (checkpoint + buffer).")
+        from expo_ft.utils import critic_diagnostics
+        critic_diagnostics.run(agent, replay_buffer, FLAGS.diagnose_critic_out)
+        return
 
     # The env is created only now: EnvClientWrapper blocks until the rollout client
     # dials in, and the agent build above is the slow part.
