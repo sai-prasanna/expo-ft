@@ -17,6 +17,7 @@ DATA_ID="${DATA_ID:-dk1_task_20}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 NUM_STEPS="${NUM_STEPS:-4001}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-2000}"  # 1000 to compare earlier checkpoints on the robot
+NUM_WORKERS="${NUM_WORKERS:-8}"  # data loader processes; the job gets 5 CPUs per GPU
 
 export HF_LEROBOT_HOME="$DATA_ROOT/lerobot"
 export OPENPI_DATA_HOME="$DATA_ROOT/openpi"
@@ -39,7 +40,7 @@ python expo_ft/agents/vla/openpi/scripts/train.py expo_pi05_dk1_lora_finetune_sf
     --data.assets.assets_dir="$DATA_ROOT/assets/expo_pi05_dk1_lora_finetune_sft" \
     --data.assets.asset_id="expo_ft/${DATA_ID}" \
     --batch-size="$BATCH_SIZE" \
-    --num-workers=8 \
+    --num-workers="$NUM_WORKERS" \
     --num_train_steps="$NUM_STEPS" \
     --save_interval="$SAVE_INTERVAL" \
     --fsdp_devices=1
